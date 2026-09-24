@@ -68,3 +68,12 @@ The useful comparison is **control vs toggle after comparable accumulated drift*
   new wheel-slip accumulation rather than retained state.
 
 This test does not require firmware modification.
+
+
+## Result
+
+Both conditions still developed carpet drift. The map-switch toggle therefore does not provide
+a practical re-anchoring/calibration mechanism for this problem.
+
+This narrows the search toward navigation telemetry and event data rather than map enable/disable
+state.
