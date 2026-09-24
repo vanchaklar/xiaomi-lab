@@ -20,10 +20,19 @@ not rely on them as the only physical safeguard.
 Every movement pulse is followed by an explicit stop, and a final stop is sent from
 a `finally` block.
 
+The default movement pulses are intentionally long:
+
+| direction | pulse |
+| --- | ---: |
+| forward | 10.0 s |
+| backward | 1.0 s |
+| left | 1.5 s |
+| right | 1.5 s |
+
 ## Preview a random sequence
 
 ```bash
-python experiments/raw_random_walk.py --duration 15
+python experiments/raw_random_walk.py --duration 30
 ```
 
 No commands are sent and no CSV is written without `--apply`.
@@ -31,13 +40,21 @@ No commands are sent and no CSV is written without `--apply`.
 ## Run it
 
 ```bash
-python experiments/raw_random_walk.py --apply --duration 15
+python experiments/raw_random_walk.py --apply --duration 30
 ```
 
-Useful shorter first test:
+The duration is a soft run limit: a movement pulse that has already started is
+allowed to finish, so the total elapsed time can exceed `--duration` by up to one
+pulse.
+
+Pulse lengths can be overridden:
 
 ```bash
-python experiments/raw_random_walk.py --apply --duration 5
+python experiments/raw_random_walk.py --apply \
+  --duration 30 \
+  --forward-pulse 10 \
+  --backward-pulse 1 \
+  --side-pulse 1.5
 ```
 
 Each applied run writes a timestamped CSV under `data/`, for example:
@@ -63,7 +80,7 @@ The table columns are:
 A custom output path can be supplied:
 
 ```bash
-python experiments/raw_random_walk.py --apply --duration 5 --output data/test1.csv
+python experiments/raw_random_walk.py --apply --duration 30 --output data/test1.csv
 ```
 
 The CSV can be loaded directly into a pandas DataFrame:
