@@ -33,12 +33,20 @@ CONTROLS = [
 ]
 
 
-def read_raw(vac, name: str, siid: int, piid: int) -> None:
-    try:
-        response = vac.get_property_by(siid, piid)
-        print(f"{name:22} ({siid},{piid}) => {response!r}")
-    except Exception as exc:
-        print(f"{name:22} ({siid},{piid}) => EXCEPTION: {type(exc).__name__}: {exc}")
+def read_raw(vac, name: str, siid: int, piid: int, retries: int = 1) -> None:
+    for attempt in range(retries + 1):
+        try:
+            response = vac.get_property_by(siid, piid)
+            print(f"{name:22} ({siid},{piid}) => {response!r}")
+            return
+        except Exception as exc:
+            if attempt >= retries:
+                print(
+                    f"{name:22} ({siid},{piid}) => "
+                    f"EXCEPTION: {type(exc).__name__}: {exc}"
+                )
+                return
+            time.sleep(0.25)
 
 
 def sample(vac) -> None:
@@ -73,6 +81,14 @@ def main() -> None:
         parser.error("--interval must be non-negative")
 
     vac = connect()
+
+    # Prime miIO discovery/session state before the first property query. This avoids
+    # treating a transient first-packet discovery failure as a property result.
+    try:
+        info = vac.info()
+        print(f"device={info.model} firmware={info.firmware_version}")
+    except Exception as exc:
+        print(f"initial_info=EXCEPTION: {type(exc).__name__}: {exc}")
 
     for index in range(args.samples):
         if args.samples > 1:
