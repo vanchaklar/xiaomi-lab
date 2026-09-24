@@ -42,6 +42,14 @@ def connect() -> G1Vacuum:
     return G1Vacuum(ip=ip, token=_read_token())
 
 
-def safe_info() -> str:
-    """Return the normal miIO info representation."""
-    return str(connect().info())
+def safe_info(vac: G1Vacuum | None = None) -> dict[str, str]:
+    """Return device info without token, MAC address, or IP address."""
+    if vac is None:
+        vac = connect()
+
+    info = vac.info()
+    return {
+        "model": info.model,
+        "hardware_version": info.hardware_version,
+        "firmware_version": info.firmware_version,
+    }
