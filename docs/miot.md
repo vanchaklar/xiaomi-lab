@@ -71,3 +71,30 @@ firmware binary, exact target model, and checksum are independently verified.
   https://github.com/rytilahti/python-miio/blob/0.5.12/miio/device.py
 - Public MIoT specification mirror:
   https://home.miot-spec.com/spec?type=urn:miot-spec-v2:device:vacuum:0000A006:mijia-v2:2
+
+
+## Observed on firmware 2.2.1
+
+A read-only probe against the confirmed device returned successful `code: 0` responses for every tested property below:
+
+| Property | SIID/PIID | Observed value |
+| --- | --- | --- |
+| status | 2/1 | 5 |
+| fault | 2/2 | 0 |
+| operating mode | 2/4 | 1 |
+| water level | 2/5 | 2 |
+| fan level | 2/6 | 1 |
+| battery | 3/1 | 100 |
+| charging state | 3/2 | 2 |
+| alarm | 4/1 | true |
+| volume | 4/2 | 50 |
+| map switch | 7/2 | true |
+| language | 12/1 | 0 |
+| DND switch | 12/2 | true |
+| DND time | 12/3 | 20000700 |
+| timezone | 12/4 | 8 |
+| mop state | 16/1 | 0 |
+
+The key result for the navigation work is that `map_switch` is not merely present in the public MIoT description: firmware 2.2.1 responds to it successfully.
+
+These values are snapshots, not constants. In particular, status, battery, charging, and user-configurable settings vary with device state.
