@@ -7,7 +7,7 @@ import argparse
 import inspect
 from pprint import pprint
 
-from vacuum import connect
+from vacuum import connect, safe_info
 
 
 # Properties from the public mijia.vacuum.v2 MIoT specification that are readable.
@@ -60,7 +60,7 @@ def main() -> None:
     vac = connect()
 
     print("info:")
-    print(vac.info())
+    pprint(safe_info(vac))
 
     if args.methods:
         print("\nmethods:")
