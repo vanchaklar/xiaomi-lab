@@ -31,3 +31,24 @@ Movement commands can move the robot immediately. Keep it on the floor and away 
 3. Test whether docking plus map-state changes can re-anchor navigation after carpet drift.
 4. Inspect direct-controller behavior and map events.
 5. Investigate firmware/MCU options only after the local interface is understood.
+
+
+## Current experiment
+
+The first state-changing experiment is a guarded map-switch toggle while the robot is docked.
+
+Read-only check:
+
+```bash
+python experiments/map_toggle.py
+```
+
+Apply the reversible toggle:
+
+```bash
+python experiments/map_toggle.py --apply
+```
+
+See `docs/experiments/map-toggle.md` for interpretation. A successful toggle only proves
+that the property is writable; the later dock/carpet A/B test determines whether it actually
+re-anchors navigation.
