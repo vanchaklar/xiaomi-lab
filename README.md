@@ -65,3 +65,16 @@ python experiments/raw_random_walk.py --apply --duration 5
 
 It uses `raw_command("set_properties", ...)` directly and always sends an explicit stop
 between pulses and on exit.
+
+
+## Drawn path patterns
+
+A separate touch controller lets you draw a path on the phone, save it by name, and
+replay it later:
+
+```bash
+python experiments/draw_pattern_control.py
+```
+
+Then open `http://127.0.0.1:8766/` on the same phone. Patterns are stored locally
+under `data/patterns/`. See `docs/experiments/draw-patterns.md`.
