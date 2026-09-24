@@ -78,3 +78,15 @@ python experiments/draw_pattern_control.py
 
 Then open `http://127.0.0.1:8766/` on the same phone. Patterns are stored locally
 under `data/patterns/`. See `docs/experiments/draw-patterns.md`.
+
+
+## Raw MIoT LAN events
+
+A raw LAN listener now tests Xiaomi's wildcard push subscription and records
+`event_occured` / `properties_changed` messages:
+
+```bash
+python experiments/lan_event_listener.py --duration 60
+```
+
+See `docs/experiments/lan-events.md`.
