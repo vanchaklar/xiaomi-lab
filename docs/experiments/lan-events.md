@@ -1,0 +1,80 @@
+# MIoT LAN event listener
+
+This experiment targets the event streams that cannot be read with
+`get_properties`:
+
+- map points: service 7 / event 1
+- redraw map: service 7 / event 2
+- current clean record: service 9 / event 1
+- temp/localization log: service 16 / event 1
+
+Firmware 2.2.1 returned `-4004` when the event-backing properties were polled
+directly, so this listener uses Xiaomi's LAN push subscription mechanism instead.
+
+## Protocol
+
+The listener keeps one UDP socket open and:
+
+1. sends an `MDID` probe to UDP 54321;
+2. inspects the response for `MSUB` / `PUB` wildcard subscription support;
+3. sends:
+
+```text
+miIO.sub
+version = 2.0
+sub_method = "."
+```
+
+4. waits for device-initiated `event_occured` and `properties_changed` messages;
+5. ACKs each uplink message;
+6. sends `miIO.unsub` on clean shutdown.
+
+The spelling `event_occured` is Xiaomi's protocol spelling.
+
+## Run
+
+```bash
+python experiments/lan_event_listener.py
+```
+
+Or collect for one minute:
+
+```bash
+python experiments/lan_event_listener.py --duration 60
+```
+
+Output is written to:
+
+```text
+data/lan_events_YYYYMMDD_HHMMSS.csv
+```
+
+## Expected first result
+
+The script first prints whether this particular firmware advertises wildcard LAN
+subscription support.
+
+If it prints:
+
+```text
+wildcard=true
+```
+
+and `miIO.sub` succeeds, start a short cleaning run and watch especially for:
+
+```text
+EVENT 7/1  map_points
+EVENT 16/1 temp_log
+```
+
+If the device does not advertise wildcard subscription, that is also a useful
+result. This vacuum is old enough that it may require the older local-scene push
+mechanism instead; that mechanism needs event-specific scene metadata.
+
+## Notes
+
+This listener is read-only with respect to the vacuum's cleaning/settings state.
+It does create a temporary LAN push subscription and removes it on clean shutdown.
+
+Use Ctrl-C rather than killing the process when possible so `miIO.unsub` can be
+sent.
