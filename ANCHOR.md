@@ -18,17 +18,17 @@ Understand and mitigate carpet-only navigation drift on a Xiaomi Mi Robot Vacuum
 - Firmware 2.2.1 responds successfully to all currently probed published MIoT properties, including `map_switch` at SIID 7 / PIID 2.
 - The dock-only map-switch toggle is verified on firmware 2.2.1: both writes return code 0 and read back correctly as `False` then `True` while fully charged on the dock.
 - Behavioral A/B result: carpet drift still occurs after both the control restart and the docked map-switch toggle; map-switch cycling does not solve the carpet-drift problem.
-- A map screenshot shows two black wall traces produced at the same physical wall location but plotted at substantially different map coordinates. This is direct evidence that the robot's internal pose estimate has moved while the external obstacle remained fixed.
+- Repeated black wall traces at the same real-world location are useful external evidence of accumulated pose error, but they are not a trustworthy onboard landmark because the robot has no identity signal proving that two obstacle observations came from the same wall.
 
 ## Working direction
 
 Prefer observation and reversible experiments before firmware changes:
 
-1. Probe event-backing payloads for map points, clean records, and the localization-oriented temp-log event.
-2. Use repeated observations of the same physical wall as a landmark constraint: compare its map coordinates and orientation across passes to quantify translation and heading drift.
-3. If event payloads are not directly readable, implement/capture MIoT notifications rather than polling them.
-4. Characterize direct-controller motion as a controlled input for navigation experiments.
-5. Investigate APP/MCU firmware only if the local protocol cannot expose a useful correction or calibration mechanism.
+1. Probe event-backing payloads for map points, clean records, and the localization-oriented temp-log event to understand how pose error develops.
+2. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
+3. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
+4. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
+5. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
 
 ## Constraints
 
@@ -36,3 +36,4 @@ Prefer observation and reversible experiments before firmware changes:
 - Treat movement commands as physical actions.
 - Keep read-only probes separate from state-changing experiments.
 - Do not assume firmware images for similar Xiaomi models are interchangeable.
+- Do not use an obstacle as a calibration landmark unless the robot has an independent way to identify that obstacle.
