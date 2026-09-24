@@ -49,5 +49,6 @@ Apply the reversible toggle:
 python experiments/map_toggle.py --apply
 ```
 
-The toggle has now been verified writable on firmware 2.2.1. The active next step is the
-control-vs-toggle dock/carpet A/B test in `docs/experiments/reanchor-ab.md`.
+The map-switch A/B test is complete: carpet drift still occurs in both conditions, so toggling
+that property is not a useful calibration mechanism. The active next step is probing the model's
+event-backed map and localization telemetry in `docs/experiments/event-payloads.md`.
