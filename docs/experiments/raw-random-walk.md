@@ -26,7 +26,7 @@ a `finally` block.
 python experiments/raw_random_walk.py --duration 15
 ```
 
-No commands are sent without `--apply`.
+No commands are sent and no CSV is written without `--apply`.
 
 ## Run it
 
@@ -39,6 +39,44 @@ Useful shorter first test:
 ```bash
 python experiments/raw_random_walk.py --apply --duration 5
 ```
+
+Each applied run writes a timestamped CSV under `data/`, for example:
+
+```text
+data/raw_random_walk_20260924_220500.csv
+```
+
+The table columns are:
+
+| column | meaning |
+| --- | --- |
+| `timestamp_utc` | wall-clock timestamp of the command/response |
+| `elapsed_s` | seconds from the start of the run |
+| `step` | movement step number |
+| `phase` | `initial_stop`, `move`, `stop`, or `final_stop` |
+| `direction` | left/right/forward/backward/stop |
+| `value` | raw MIoT direction value |
+| `requested_pulse_s` | requested movement duration |
+| `response_code` | MIoT result code, normally 0 |
+| `response_json` | complete raw response serialized as JSON |
+
+A custom output path can be supplied:
+
+```bash
+python experiments/raw_random_walk.py --apply --duration 5 --output data/test1.csv
+```
+
+The CSV can be loaded directly into a pandas DataFrame:
+
+```python
+import pandas as pd
+
+df = pd.read_csv("data/test1.csv")
+print(df)
+```
+
+Pandas is not required by the experiment itself; the logger uses Python's standard
+`csv` module so it stays lightweight on the Android/Debian environment.
 
 The current direction mapping follows the direct-controller mapping already used by
 this project:
