@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Draw, save, and replay motion patterns for mijia.vacuum.v2.
+"""Draw, edit, save, and replay motion patterns for mijia.vacuum.v2.
 
-The phone browser provides a touch canvas. A drawn polyline is stored as normalized
-coordinates. Playback converts the polyline into turn + forward segments and drives
-the vacuum through repeated MIoT direction-key writes.
-
-The drawing is geometric, not a recording of gyro input.
+A drawn polyline is converted into an explicit editable command sequence. Saved
+patterns contain both the drawing and the exact command sequence used for replay.
 """
 
 from __future__ import annotations
@@ -13,7 +10,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import re
 import signal
 import sys
@@ -48,7 +44,7 @@ LOG_FIELDS = [
     "elapsed_s",
     "source",
     "pattern",
-    "segment",
+    "command_index",
     "direction",
     "duration_s",
     "response_code",
@@ -62,28 +58,65 @@ HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Xiaomi Draw Control</title>
 <style>
-body { font-family:sans-serif; max-width:720px; margin:0 auto; padding:12px; background:#111; color:#eee; }
+body { font-family:sans-serif; max-width:760px; margin:0 auto; padding:12px; background:#111; color:#eee; }
 .card { background:#1b1b1b; border-radius:12px; padding:12px; margin:10px 0; }
-canvas { width:100%; height:52vh; background:#fafafa; border-radius:10px; touch-action:none; display:block; }
-button { font-size:17px; padding:12px 16px; margin:5px; border:0; border-radius:9px; }
-input, select { font-size:16px; padding:9px; margin:5px; border-radius:8px; max-width:95%; }
+canvas { width:100%; height:45vh; background:#fafafa; border-radius:10px; touch-action:none; display:block; }
+button { font-size:16px; padding:10px 14px; margin:4px; border:0; border-radius:9px; }
+input, select { font-size:15px; padding:7px; margin:3px; border-radius:7px; max-width:95%; }
 #play { background:#2d7; }
 #stop { background:#e44; color:#fff; }
 #dock { background:#58c; color:#fff; }
-.row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.row { display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
 small { color:#bbb; }
+table { width:100%; border-collapse:collapse; margin-top:8px; }
+th, td { border-bottom:1px solid #444; padding:6px 3px; text-align:left; }
+td input, td select { width:90%; margin:0; }
+.cmdButtons button { padding:6px 9px; margin:1px; font-size:14px; }
+#commandsWrap { overflow-x:auto; }
 </style>
 </head>
 <body>
 <h2>Draw vacuum pattern</h2>
 
 <div class="card">
-  <canvas id="pad" width="600" height="600"></canvas>
+  <canvas id="pad"></canvas>
   <div class="row">
     <button id="clear">CLEAR</button>
     <button id="undo">UNDO</button>
+    <button id="build">BUILD COMMANDS</button>
   </div>
-  <small>Start point is the robot position. Up on the canvas means the robot's current forward direction.</small>
+  <small>First point = robot position. Up = current robot forward direction.</small>
+</div>
+
+<div class="card">
+  <label>Forward seconds per canvas width:
+    <input id="forwardScale" type="number" min="0.1" step="0.1" value="10">
+  </label><br>
+  <label>Turn seconds per 90°:
+    <input id="turn90" type="number" min="0.05" step="0.05" value="1.5">
+  </label><br>
+  <label>Stop between generated commands:
+    <input id="stopDuration" type="number" min="0" step="0.01" value="0.08">
+  </label><br>
+  <label>Simplify tolerance (% of canvas):
+    <input id="tolerance" type="number" min="0" max="20" step="0.5" value="2">
+  </label>
+</div>
+
+<div class="card">
+  <div class="row">
+    <strong>Command sequence</strong>
+    <button id="addCommand">ADD COMMAND</button>
+  </div>
+  <div id="commandsWrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Direction</th><th>Duration s</th><th>Edit</th></tr>
+      </thead>
+      <tbody id="commandsBody"></tbody>
+    </table>
+  </div>
+  <div id="commandState">no commands</div>
 </div>
 
 <div class="card">
@@ -100,25 +133,13 @@ small { color:#bbb; }
 </div>
 
 <div class="card">
-  <label>
-    Forward seconds per canvas width:
-    <input id="forwardScale" type="number" min="0.1" step="0.1" value="10">
-  </label><br>
-  <label>
-    Turn seconds per 90°:
-    <input id="turn90" type="number" min="0.05" step="0.05" value="1.5">
-  </label><br>
-  <label>
-    Simplify tolerance (% of canvas):
-    <input id="tolerance" type="number" min="0" max="20" step="0.5" value="2">
-  </label>
   <div class="row">
-    <button id="play">PLAY</button>
+    <button id="play">PLAY COMMANDS</button>
     <button id="stop">STOP</button>
     <button id="dock">DOCK</button>
   </div>
   <div id="state">idle</div>
-  <small>PLAY is open-loop. Carpet slip will still affect the physical trajectory.</small>
+  <small>Playback uses the table exactly. It is open-loop; carpet slip can still distort the path.</small>
 </div>
 
 <script>
@@ -126,217 +147,251 @@ const el = id => document.getElementById(id);
 const canvas = el("pad");
 const ctx = canvas.getContext("2d");
 let points = [];
+let commands = [];
 let drawing = false;
 
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
-  const old = points.slice();
   canvas.width = Math.max(1, Math.round(rect.width * dpr));
   canvas.height = Math.max(1, Math.round(rect.height * dpr));
-  points = old;
   redraw();
 }
 
 function pxy(ev) {
   const r = canvas.getBoundingClientRect();
   return {
-    x: Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)),
-    y: Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height))
+    x: Math.max(0, Math.min(1, (ev.clientX-r.left)/r.width)),
+    y: Math.max(0, Math.min(1, (ev.clientY-r.top)/r.height))
   };
 }
 
 function redraw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (points.length === 0) return;
-
-  ctx.lineWidth = Math.max(3, canvas.width / 180);
+  if (!points.length) return;
+  ctx.lineWidth = Math.max(3, canvas.width/180);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.strokeStyle = "#111";
   ctx.beginPath();
-  ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
-  for (const p of points.slice(1)) {
-    ctx.lineTo(p.x * canvas.width, p.y * canvas.height);
-  }
+  ctx.moveTo(points[0].x*canvas.width, points[0].y*canvas.height);
+  for (const p of points.slice(1)) ctx.lineTo(p.x*canvas.width, p.y*canvas.height);
   ctx.stroke();
 
   const s = points[0];
   ctx.fillStyle = "#1a7";
   ctx.beginPath();
-  ctx.arc(s.x * canvas.width, s.y * canvas.height, Math.max(5, canvas.width/80), 0, Math.PI*2);
+  ctx.arc(s.x*canvas.width, s.y*canvas.height, Math.max(5,canvas.width/80), 0, Math.PI*2);
   ctx.fill();
 
   if (points.length > 1) {
-    const e = points[points.length - 1];
+    const e = points[points.length-1];
     ctx.fillStyle = "#d33";
     ctx.beginPath();
-    ctx.arc(e.x * canvas.width, e.y * canvas.height, Math.max(5, canvas.width/80), 0, Math.PI*2);
+    ctx.arc(e.x*canvas.width, e.y*canvas.height, Math.max(5,canvas.width/80), 0, Math.PI*2);
     ctx.fill();
   }
 }
 
-canvas.addEventListener("pointerdown", ev => {
-  drawing = true;
-  points = [pxy(ev)];
+function pointLineDistance(p, a, b) {
+  const dx=b.x-a.x, dy=b.y-a.y;
+  if (dx===0 && dy===0) return Math.hypot(p.x-a.x,p.y-a.y);
+  let t=((p.x-a.x)*dx+(p.y-a.y)*dy)/(dx*dx+dy*dy);
+  t=Math.max(0,Math.min(1,t));
+  return Math.hypot(p.x-(a.x+t*dx), p.y-(a.y+t*dy));
+}
+
+function simplifyPath(ps, tol) {
+  if (ps.length<=2 || tol<=0) return ps.slice();
+  let max=0, idx=0;
+  for (let i=1;i<ps.length-1;i++) {
+    const d=pointLineDistance(ps[i],ps[0],ps[ps.length-1]);
+    if (d>max) { max=d; idx=i; }
+  }
+  if (max>tol) {
+    const l=simplifyPath(ps.slice(0,idx+1),tol);
+    const r=simplifyPath(ps.slice(idx),tol);
+    return l.slice(0,-1).concat(r);
+  }
+  return [ps[0],ps[ps.length-1]];
+}
+
+function normalizeAngle(a) {
+  while (a>Math.PI) a-=2*Math.PI;
+  while (a<=-Math.PI) a+=2*Math.PI;
+  return a;
+}
+
+function buildCommands() {
+  if (points.length<2) {
+    el("commandState").textContent="draw a path first";
+    return;
+  }
+  const path=simplifyPath(points, Number(el("tolerance").value)/100);
+  const fscale=Number(el("forwardScale").value);
+  const turn90=Number(el("turn90").value);
+  const stopDuration=Number(el("stopDuration").value);
+  let heading=0;
+  const out=[];
+
+  for (let i=0;i<path.length-1;i++) {
+    const a=path[i], b=path[i+1];
+    const dx=b.x-a.x, dy=b.y-a.y;
+    const distance=Math.hypot(dx,dy);
+    if (distance<1e-6) continue;
+
+    const target=Math.atan2(dx,-dy);
+    const delta=normalizeAngle(target-heading);
+
+    if (Math.abs(delta)>Math.PI/90) {
+      out.push({
+        direction: delta>0 ? "right" : "left",
+        duration_s: Math.abs(delta)/(Math.PI/2)*turn90
+      });
+      if (stopDuration>0) out.push({direction:"stop",duration_s:stopDuration});
+    }
+
+    out.push({direction:"forward",duration_s:distance*fscale});
+    if (stopDuration>0) out.push({direction:"stop",duration_s:stopDuration});
+    heading=target;
+  }
+
+  commands=out;
+  renderCommands();
+  el("commandState").textContent=commands.length+" commands generated";
+}
+
+function renderCommands() {
+  const body=el("commandsBody");
+  body.innerHTML="";
+  commands.forEach((cmd,index)=>{
+    const tr=document.createElement("tr");
+
+    const n=document.createElement("td");
+    n.textContent=index+1;
+
+    const d=document.createElement("td");
+    const select=document.createElement("select");
+    for (const name of ["forward","backward","left","right","stop"]) {
+      const o=document.createElement("option");
+      o.value=name; o.textContent=name;
+      if (cmd.direction===name) o.selected=true;
+      select.appendChild(o);
+    }
+    select.onchange=()=>{ commands[index].direction=select.value; };
+    d.appendChild(select);
+
+    const dur=document.createElement("td");
+    const input=document.createElement("input");
+    input.type="number";
+    input.min="0.01";
+    input.step="0.01";
+    input.value=Number(cmd.duration_s).toFixed(3);
+    input.onchange=()=>{ commands[index].duration_s=Number(input.value); };
+    dur.appendChild(input);
+
+    const actions=document.createElement("td");
+    actions.className="cmdButtons";
+    const up=document.createElement("button");
+    up.textContent="↑";
+    up.onclick=()=>{ if(index>0){ [commands[index-1],commands[index]]=[commands[index],commands[index-1]]; renderCommands(); } };
+    const down=document.createElement("button");
+    down.textContent="↓";
+    down.onclick=()=>{ if(index<commands.length-1){ [commands[index+1],commands[index]]=[commands[index],commands[index+1]]; renderCommands(); } };
+    const del=document.createElement("button");
+    del.textContent="×";
+    del.onclick=()=>{ commands.splice(index,1); renderCommands(); };
+    actions.append(up,down,del);
+
+    tr.append(n,d,dur,actions);
+    body.appendChild(tr);
+  });
+  el("commandState").textContent=commands.length ? commands.length+" commands" : "no commands";
+}
+
+canvas.addEventListener("pointerdown",ev=>{
+  drawing=true;
+  points=[pxy(ev)];
+  commands=[];
+  renderCommands();
   canvas.setPointerCapture(ev.pointerId);
   redraw();
 });
-canvas.addEventListener("pointermove", ev => {
-  if (!drawing) return;
-  const p = pxy(ev);
-  const last = points[points.length - 1];
-  const dx = p.x - last.x, dy = p.y - last.y;
-  if (dx*dx + dy*dy > 0.000025) {
-    points.push(p);
-    redraw();
-  }
+canvas.addEventListener("pointermove",ev=>{
+  if(!drawing)return;
+  const p=pxy(ev), last=points[points.length-1];
+  const dx=p.x-last.x,dy=p.y-last.y;
+  if(dx*dx+dy*dy>0.000025){points.push(p);redraw();}
 });
-canvas.addEventListener("pointerup", ev => {
-  drawing = false;
-  try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
-  el("patternState").textContent = points.length + " raw points";
+canvas.addEventListener("pointerup",ev=>{
+  drawing=false;
+  try{canvas.releasePointerCapture(ev.pointerId);}catch(_){}
+  el("patternState").textContent=points.length+" raw points";
 });
-canvas.addEventListener("pointercancel", () => { drawing = false; });
+canvas.addEventListener("pointercancel",()=>drawing=false);
 
-el("clear").onclick = () => {
-  points = [];
-  redraw();
-  el("patternState").textContent = "cleared";
-};
+el("clear").onclick=()=>{points=[];commands=[];redraw();renderCommands();};
+el("undo").onclick=()=>{if(points.length>1)points.pop();commands=[];redraw();renderCommands();};
+el("build").onclick=buildCommands;
+el("addCommand").onclick=()=>{commands.push({direction:"forward",duration_s:1});renderCommands();};
 
-el("undo").onclick = () => {
-  if (points.length > 1) points.pop();
-  redraw();
-};
-
-async function post(path, body={}) {
-  const r = await fetch(path, {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(body)
-  });
+async function post(path,body={}) {
+  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   return await r.json();
 }
 
 async function refreshPatterns() {
-  const r = await fetch("/patterns");
-  const data = await r.json();
-  const list = el("patterns");
-  list.innerHTML = "";
-  for (const name of data.patterns || []) {
-    const o = document.createElement("option");
-    o.value = name;
-    o.textContent = name;
-    list.appendChild(o);
+  const r=await fetch("/patterns"),data=await r.json(),list=el("patterns");
+  list.innerHTML="";
+  for(const name of data.patterns||[]){
+    const o=document.createElement("option");o.value=name;o.textContent=name;list.appendChild(o);
   }
 }
 
-el("save").onclick = async () => {
-  if (points.length < 2) {
-    el("patternState").textContent = "draw a path first";
-    return;
-  }
-  const name = el("name").value.trim();
-  const result = await post("/pattern/save", {name, points});
-  el("patternState").textContent = result.ok
-    ? "saved " + result.name + " (" + result.points + " points)"
+el("save").onclick=async()=>{
+  if(points.length<2){el("patternState").textContent="draw a path first";return;}
+  if(!commands.length) buildCommands();
+  const name=el("name").value.trim();
+  const result=await post("/pattern/save",{name,points,commands});
+  el("patternState").textContent=result.ok
+    ? "saved "+result.name+" ("+result.commands+" commands)"
     : result.error;
   await refreshPatterns();
 };
 
-el("load").onclick = async () => {
-  const name = el("patterns").value;
-  if (!name) return;
-  const r = await fetch("/pattern?name=" + encodeURIComponent(name));
-  const data = await r.json();
-  if (!data.ok) {
-    el("patternState").textContent = data.error;
-    return;
-  }
-  points = data.points || [];
-  el("name").value = name;
-  redraw();
-  el("patternState").textContent = "loaded " + name;
+el("load").onclick=async()=>{
+  const name=el("patterns").value;if(!name)return;
+  const r=await fetch("/pattern?name="+encodeURIComponent(name)),data=await r.json();
+  if(!data.ok){el("patternState").textContent=data.error;return;}
+  points=data.points||[];
+  commands=data.commands||[];
+  el("name").value=name;
+  redraw();renderCommands();
+  el("patternState").textContent="loaded "+name;
 };
 
-el("play").onclick = async () => {
-  if (points.length < 2) {
-    el("state").textContent = "draw or load a pattern first";
-    return;
-  }
-  const payload = {
-    name: el("name").value.trim() || "unsaved",
-    points,
-    forward_seconds_per_width: Number(el("forwardScale").value),
-    turn_seconds_per_90: Number(el("turn90").value),
-    tolerance: Number(el("tolerance").value) / 100
-  };
-  const result = await post("/pattern/play", payload);
-  el("state").textContent = result.ok
-    ? "playing " + result.name + " (" + result.segments + " segments)"
+el("play").onclick=async()=>{
+  if(!commands.length) buildCommands();
+  if(!commands.length){el("state").textContent="no commands";return;}
+  const result=await post("/pattern/play",{
+    name:el("name").value.trim()||"unsaved",
+    commands
+  });
+  el("state").textContent=result.ok
+    ? "playing "+result.name+" ("+result.commands+" commands)"
     : result.error;
 };
 
-el("stop").onclick = async () => {
-  const r = await post("/stop");
-  el("state").textContent = r.ok ? "stopped" : r.error;
-};
+el("stop").onclick=async()=>{const r=await post("/stop");el("state").textContent=r.ok?"stopped":r.error;};
+el("dock").onclick=async()=>{const r=await post("/dock");el("state").textContent=r.ok?"docking":r.error;};
+el("refresh").onclick=refreshPatterns;
 
-el("dock").onclick = async () => {
-  const r = await post("/dock");
-  el("state").textContent = r.ok ? "docking" : r.error;
-};
-
-el("refresh").onclick = refreshPatterns;
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
-refreshPatterns();
+window.addEventListener("resize",resizeCanvas);
+resizeCanvas();renderCommands();refreshPatterns();
 </script>
 </body>
 </html>
 """
-
-
-def normalize_angle(angle: float) -> float:
-    while angle > math.pi:
-        angle -= 2 * math.pi
-    while angle <= -math.pi:
-        angle += 2 * math.pi
-    return angle
-
-
-def point_line_distance(point, start, end) -> float:
-    x, y = point["x"], point["y"]
-    x1, y1 = start["x"], start["y"]
-    x2, y2 = end["x"], end["y"]
-    dx, dy = x2 - x1, y2 - y1
-    if dx == 0 and dy == 0:
-        return math.hypot(x - x1, y - y1)
-    t = max(0.0, min(1.0, ((x-x1)*dx + (y-y1)*dy) / (dx*dx + dy*dy)))
-    px, py = x1 + t*dx, y1 + t*dy
-    return math.hypot(x - px, y - py)
-
-
-def simplify(points, tolerance: float):
-    if len(points) <= 2 or tolerance <= 0:
-        return points
-
-    start, end = points[0], points[-1]
-    max_distance = 0.0
-    index = 0
-    for i in range(1, len(points) - 1):
-        distance = point_line_distance(points[i], start, end)
-        if distance > max_distance:
-            index = i
-            max_distance = distance
-
-    if max_distance > tolerance:
-        left = simplify(points[: index + 1], tolerance)
-        right = simplify(points[index:], tolerance)
-        return left[:-1] + right
-
-    return [start, end]
 
 
 class Controller:
@@ -364,6 +419,33 @@ class Controller:
             )
         return name
 
+    @staticmethod
+    def validate_points(points):
+        clean = []
+        for p in points:
+            x, y = float(p["x"]), float(p["y"])
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                raise ValueError("all coordinates must be normalized to 0..1")
+            clean.append({"x": x, "y": y})
+        if len(clean) < 2:
+            raise ValueError("pattern needs at least two points")
+        return clean
+
+    @staticmethod
+    def validate_commands(commands):
+        clean = []
+        if not commands:
+            raise ValueError("command sequence is empty")
+        for i, cmd in enumerate(commands, start=1):
+            direction = str(cmd.get("direction", ""))
+            if direction not in DIRECTIONS:
+                raise ValueError(f"command {i}: invalid direction {direction!r}")
+            duration = float(cmd.get("duration_s", 0))
+            if duration <= 0 or duration > 120:
+                raise ValueError(f"command {i}: duration must be > 0 and <= 120 seconds")
+            clean.append({"direction": direction, "duration_s": duration})
+        return clean
+
     def _raw_direction(self, direction: str):
         payload = [{
             "did": f"draw-set-{CONTROLLER_SIID}-{DIRECTION_PIID}",
@@ -381,13 +463,13 @@ class Controller:
             return response.get("code")
         return None
 
-    def _log(self, source, pattern, segment, direction, duration, response):
+    def _log(self, source, pattern, index, direction, duration, response):
         self.writer.writerow({
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "elapsed_s": f"{time.monotonic() - self.started:.6f}",
+            "elapsed_s": f"{time.monotonic()-self.started:.6f}",
             "source": source,
             "pattern": pattern,
-            "segment": segment,
+            "command_index": index,
             "direction": direction,
             "duration_s": "" if duration is None else f"{duration:.6f}",
             "response_code": self._code(response),
@@ -395,21 +477,18 @@ class Controller:
         })
         self.handle.flush()
 
-    def save_pattern(self, name: str, points):
+    def save_pattern(self, name: str, points, commands):
         name = self.validate_name(name)
-        clean = []
-        for p in points:
-            x = float(p["x"])
-            y = float(p["y"])
-            if not (0 <= x <= 1 and 0 <= y <= 1):
-                raise ValueError("all pattern coordinates must be normalized to 0..1")
-            clean.append({"x": x, "y": y})
-        if len(clean) < 2:
-            raise ValueError("pattern needs at least two points")
-
+        clean_points = self.validate_points(points)
+        clean_commands = self.validate_commands(commands)
         path = PATTERN_DIR / f"{name}.json"
-        path.write_text(json.dumps({"name": name, "points": clean}, indent=2) + "\n")
-        return name, len(clean)
+        path.write_text(
+            json.dumps(
+                {"name": name, "points": clean_points, "commands": clean_commands},
+                indent=2,
+            ) + "\n"
+        )
+        return name, len(clean_points), len(clean_commands)
 
     def list_patterns(self):
         return sorted(p.stem for p in PATTERN_DIR.glob("*.json"))
@@ -419,16 +498,18 @@ class Controller:
         path = PATTERN_DIR / f"{name}.json"
         if not path.exists():
             raise FileNotFoundError(name)
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
+        data.setdefault("commands", [])
+        return data
 
-    def _hold(self, pattern, segment, direction: str, duration: float):
+    def _hold(self, pattern, index, direction: str, duration: float):
         deadline = time.monotonic() + duration
         first = True
         while first or time.monotonic() < deadline:
             if self.cancel.is_set():
                 return False
             response = self._raw_direction(direction)
-            self._log("play", pattern, segment, direction, duration, response)
+            self._log("play", pattern, index, direction, duration, response)
             first = False
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -456,21 +537,9 @@ class Controller:
             self._log("dock", "", "", "dock", None, response)
             return response
 
-    def play(self, name, points, forward_seconds_per_width, turn_seconds_per_90, tolerance):
-        if forward_seconds_per_width <= 0:
-            raise ValueError("forward_seconds_per_width must be positive")
-        if turn_seconds_per_90 <= 0:
-            raise ValueError("turn_seconds_per_90 must be positive")
-        if tolerance < 0:
-            raise ValueError("tolerance cannot be negative")
-
+    def play(self, name, commands):
         pattern = self.validate_name(name)
-        clean = [{"x": float(p["x"]), "y": float(p["y"])} for p in points]
-        if len(clean) < 2:
-            raise ValueError("pattern needs at least two points")
-        path = simplify(clean, tolerance)
-        if len(path) < 2:
-            raise ValueError("pattern collapsed to fewer than two points")
+        sequence = self.validate_commands(commands)
 
         self.cancel.set()
         if self.playback_thread and self.playback_thread.is_alive():
@@ -478,34 +547,18 @@ class Controller:
         self.cancel = threading.Event()
 
         def run():
-            heading = 0.0  # up on canvas
             try:
                 self._raw_direction("stop")
-                for i, (a, b) in enumerate(zip(path, path[1:]), start=1):
+                for index, cmd in enumerate(sequence, start=1):
                     if self.cancel.is_set():
                         break
-
-                    dx = b["x"] - a["x"]
-                    dy = b["y"] - a["y"]
-                    distance = math.hypot(dx, dy)
-                    if distance < 1e-6:
-                        continue
-
-                    target_heading = math.atan2(dx, -dy)
-                    delta = normalize_angle(target_heading - heading)
-
-                    if abs(delta) > math.radians(2):
-                        turn_direction = "right" if delta > 0 else "left"
-                        turn_duration = abs(delta) / (math.pi / 2) * turn_seconds_per_90
-                        if not self._hold(pattern, i, turn_direction, turn_duration):
-                            break
-                        self._raw_direction("stop")
-
-                    forward_duration = distance * forward_seconds_per_width
-                    if not self._hold(pattern, i, "forward", forward_duration):
+                    if not self._hold(
+                        pattern,
+                        index,
+                        cmd["direction"],
+                        cmd["duration_s"],
+                    ):
                         break
-                    self._raw_direction("stop")
-                    heading = target_heading
             finally:
                 try:
                     response = self._raw_direction("stop")
@@ -515,7 +568,7 @@ class Controller:
 
         self.playback_thread = threading.Thread(target=run, daemon=True)
         self.playback_thread.start()
-        return pattern, len(path) - 1
+        return pattern, len(sequence)
 
     def close(self):
         self.cancel.set()
@@ -578,21 +631,23 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
 
             if self.path == "/pattern/save":
-                name, count = self.controller.save_pattern(
-                    payload.get("name", ""), payload.get("points", [])
+                name, points, commands = self.controller.save_pattern(
+                    payload.get("name", ""),
+                    payload.get("points", []),
+                    payload.get("commands", []),
                 )
-                self._json(200, {"ok": True, "name": name, "points": count})
+                self._json(
+                    200,
+                    {"ok": True, "name": name, "points": points, "commands": commands},
+                )
                 return
 
             if self.path == "/pattern/play":
-                name, segments = self.controller.play(
+                name, commands = self.controller.play(
                     payload.get("name", "unsaved"),
-                    payload.get("points", []),
-                    float(payload.get("forward_seconds_per_width", 0)),
-                    float(payload.get("turn_seconds_per_90", 0)),
-                    float(payload.get("tolerance", 0)),
+                    payload.get("commands", []),
                 )
-                self._json(200, {"ok": True, "name": name, "segments": segments})
+                self._json(200, {"ok": True, "name": name, "commands": commands})
                 return
 
             if self.path == "/stop":
@@ -622,7 +677,7 @@ def main():
         "--repeat",
         type=float,
         default=0.25,
-        help="seconds between repeated movement commands during playback (default: 0.25)",
+        help="seconds between repeated movement writes during a command (default: 0.25)",
     )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
