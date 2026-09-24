@@ -5,15 +5,21 @@ This deliberately bypasses G1Vacuum.set_property_by() and sends the underlying
 set_properties request through raw_command(). The robot is stopped before the
 sequence and again in a finally block.
 
+Every command/response is persisted as a CSV table so the run can be analyzed
+later with pandas or any spreadsheet tool.
+
 Default mode is dry-run. Pass --apply to move the robot.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import random
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +42,18 @@ DIRECTIONS = {
 
 MOVING_DIRECTIONS = ("left", "right", "forward", "backward")
 
+FIELDNAMES = [
+    "timestamp_utc",
+    "elapsed_s",
+    "step",
+    "phase",
+    "direction",
+    "value",
+    "requested_pulse_s",
+    "response_code",
+    "response_json",
+]
+
 
 def raw_direction(vac, direction: str):
     value = DIRECTIONS[direction]
@@ -50,12 +68,47 @@ def raw_direction(vac, direction: str):
     return vac.raw_command("set_properties", payload)
 
 
-def response_ok(response) -> bool:
-    return (
+def response_code(response):
+    if (
         isinstance(response, list)
-        and bool(response)
+        and response
         and isinstance(response[0], dict)
-        and response[0].get("code") == 0
+    ):
+        return response[0].get("code")
+    return None
+
+
+def response_ok(response) -> bool:
+    return response_code(response) == 0
+
+
+def default_output_path() -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return REPO_ROOT / "data" / f"raw_random_walk_{stamp}.csv"
+
+
+def write_row(
+    writer,
+    *,
+    started: float,
+    step: int,
+    phase: str,
+    direction: str,
+    pulse: float | None,
+    response,
+) -> None:
+    writer.writerow(
+        {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "elapsed_s": f"{time.monotonic() - started:.6f}",
+            "step": step,
+            "phase": phase,
+            "direction": direction,
+            "value": DIRECTIONS[direction],
+            "requested_pulse_s": "" if pulse is None else f"{pulse:.6f}",
+            "response_code": response_code(response),
+            "response_json": json.dumps(response, separators=(",", ":"), sort_keys=True),
+        }
     )
 
 
@@ -98,6 +151,12 @@ def main() -> None:
         default=None,
         help="optional deterministic random seed for reproducing a sequence",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="CSV output path; defaults to data/raw_random_walk_<timestamp>.csv",
+    )
     args = parser.parse_args()
 
     if args.duration <= 0:
@@ -119,52 +178,109 @@ def main() -> None:
             direction = rng.choice(MOVING_DIRECTIONS)
             pulse = min(rng.uniform(args.min_pulse, args.max_pulse), args.duration - elapsed)
             step += 1
-            print(f"step={step} direction={direction} value={DIRECTIONS[direction]} pulse={pulse:.3f}")
+            print(
+                f"step={step} direction={direction} "
+                f"value={DIRECTIONS[direction]} pulse={pulse:.3f}"
+            )
             elapsed += pulse + args.pause
         print("final=stop")
+        print("No CSV is written for dry-run mode.")
         print("Re-run with --apply only with the robot on open floor away from stairs.")
         return
 
+    output_path = args.output or default_output_path()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     vac = connect()
-
-    print("initial_stop_response=", raw_direction(vac, "stop"))
-
     started = time.monotonic()
     step = 0
 
-    try:
-        while True:
-            elapsed = time.monotonic() - started
-            remaining = args.duration - elapsed
-            if remaining <= 0:
-                break
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        handle.flush()
 
-            direction = rng.choice(MOVING_DIRECTIONS)
-            pulse = min(rng.uniform(args.min_pulse, args.max_pulse), remaining)
-            step += 1
+        initial_stop = raw_direction(vac, "stop")
+        print("initial_stop_response=", initial_stop)
+        write_row(
+            writer,
+            started=started,
+            step=0,
+            phase="initial_stop",
+            direction="stop",
+            pulse=None,
+            response=initial_stop,
+        )
+        handle.flush()
 
-            response = raw_direction(vac, direction)
-            print(
-                f"step={step} direction={direction} value={DIRECTIONS[direction]} "
-                f"pulse={pulse:.3f} response={response!r}"
-            )
-            if not response_ok(response):
-                raise RuntimeError(f"raw direction command failed: {response!r}")
-
-            time.sleep(pulse)
-
-            stop_response = raw_direction(vac, "stop")
-            print(f"step={step} stop_response={stop_response!r}")
-            if not response_ok(stop_response):
-                raise RuntimeError(f"raw stop command failed: {stop_response!r}")
-
-            if args.pause:
-                time.sleep(args.pause)
-    finally:
         try:
-            print("final_stop_response=", raw_direction(vac, "stop"))
-        except Exception as exc:
-            print(f"final_stop_failed={type(exc).__name__}: {exc}", file=sys.stderr)
+            while True:
+                elapsed = time.monotonic() - started
+                remaining = args.duration - elapsed
+                if remaining <= 0:
+                    break
+
+                direction = rng.choice(MOVING_DIRECTIONS)
+                pulse = min(rng.uniform(args.min_pulse, args.max_pulse), remaining)
+                step += 1
+
+                response = raw_direction(vac, direction)
+                print(
+                    f"step={step} direction={direction} value={DIRECTIONS[direction]} "
+                    f"pulse={pulse:.3f} response={response!r}"
+                )
+                write_row(
+                    writer,
+                    started=started,
+                    step=step,
+                    phase="move",
+                    direction=direction,
+                    pulse=pulse,
+                    response=response,
+                )
+                handle.flush()
+
+                if not response_ok(response):
+                    raise RuntimeError(f"raw direction command failed: {response!r}")
+
+                time.sleep(pulse)
+
+                stop_response = raw_direction(vac, "stop")
+                print(f"step={step} stop_response={stop_response!r}")
+                write_row(
+                    writer,
+                    started=started,
+                    step=step,
+                    phase="stop",
+                    direction="stop",
+                    pulse=None,
+                    response=stop_response,
+                )
+                handle.flush()
+
+                if not response_ok(stop_response):
+                    raise RuntimeError(f"raw stop command failed: {stop_response!r}")
+
+                if args.pause:
+                    time.sleep(args.pause)
+        finally:
+            try:
+                final_stop = raw_direction(vac, "stop")
+                print("final_stop_response=", final_stop)
+                write_row(
+                    writer,
+                    started=started,
+                    step=step,
+                    phase="final_stop",
+                    direction="stop",
+                    pulse=None,
+                    response=final_stop,
+                )
+                handle.flush()
+            except Exception as exc:
+                print(f"final_stop_failed={type(exc).__name__}: {exc}", file=sys.stderr)
+
+    print(f"csv={output_path}")
 
 
 if __name__ == "__main__":
