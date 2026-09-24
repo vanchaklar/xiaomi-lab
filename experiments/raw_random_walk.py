@@ -87,6 +87,14 @@ def default_output_path() -> Path:
     return REPO_ROOT / "data" / f"raw_random_walk_{stamp}.csv"
 
 
+def pulse_for(direction: str, args) -> float:
+    if direction == "forward":
+        return args.forward_pulse
+    if direction == "backward":
+        return args.backward_pulse
+    return args.side_pulse
+
+
 def write_row(
     writer,
     *,
@@ -124,20 +132,29 @@ def main() -> None:
     parser.add_argument(
         "--duration",
         type=float,
-        default=15.0,
-        help="total random-walk duration in seconds (default: 15)",
+        default=30.0,
+        help=(
+            "soft total run duration in seconds (default: 30); an already-started "
+            "movement pulse is allowed to finish"
+        ),
     )
     parser.add_argument(
-        "--min-pulse",
+        "--forward-pulse",
         type=float,
-        default=0.20,
-        help="minimum movement pulse in seconds (default: 0.20)",
+        default=10.0,
+        help="forward movement pulse in seconds (default: 10)",
     )
     parser.add_argument(
-        "--max-pulse",
+        "--backward-pulse",
         type=float,
-        default=0.65,
-        help="maximum movement pulse in seconds (default: 0.65)",
+        default=1.0,
+        help="backward movement pulse in seconds (default: 1)",
+    )
+    parser.add_argument(
+        "--side-pulse",
+        type=float,
+        default=1.5,
+        help="left/right movement pulse in seconds (default: 1.5)",
     )
     parser.add_argument(
         "--pause",
@@ -161,10 +178,12 @@ def main() -> None:
 
     if args.duration <= 0:
         parser.error("--duration must be positive")
-    if args.min_pulse <= 0 or args.max_pulse <= 0:
-        parser.error("pulse durations must be positive")
-    if args.min_pulse > args.max_pulse:
-        parser.error("--min-pulse cannot exceed --max-pulse")
+    if args.forward_pulse <= 0:
+        parser.error("--forward-pulse must be positive")
+    if args.backward_pulse <= 0:
+        parser.error("--backward-pulse must be positive")
+    if args.side_pulse <= 0:
+        parser.error("--side-pulse must be positive")
     if args.pause < 0:
         parser.error("--pause must be non-negative")
 
@@ -176,7 +195,7 @@ def main() -> None:
         print("dry_run=True")
         while elapsed < args.duration:
             direction = rng.choice(MOVING_DIRECTIONS)
-            pulse = min(rng.uniform(args.min_pulse, args.max_pulse), args.duration - elapsed)
+            pulse = pulse_for(direction, args)
             step += 1
             print(
                 f"step={step} direction={direction} "
@@ -214,14 +233,9 @@ def main() -> None:
         handle.flush()
 
         try:
-            while True:
-                elapsed = time.monotonic() - started
-                remaining = args.duration - elapsed
-                if remaining <= 0:
-                    break
-
+            while (time.monotonic() - started) < args.duration:
                 direction = rng.choice(MOVING_DIRECTIONS)
-                pulse = min(rng.uniform(args.min_pulse, args.max_pulse), remaining)
+                pulse = pulse_for(direction, args)
                 step += 1
 
                 response = raw_direction(vac, direction)
