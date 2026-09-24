@@ -64,3 +64,20 @@ If this stage succeeds, the next experiment is behavioral:
 
 That A/B comparison is what can tell us whether the switch affects the estimator rather than
 only map publication/display.
+
+
+## Result on firmware 2.2.1
+
+Verified while the robot was fully charged on the dock (`charging_state=2`):
+
+```text
+map_switch_before=True
+set False -> code 0
+map_switch_after_disable=False
+set True -> code 0
+map_switch_after_enable=True
+toggle_completed=True
+```
+
+So `map_switch` is confirmed writable and immediately readable on this device. The next
+question is behavioral: whether this state transition affects the retained navigation estimate.
