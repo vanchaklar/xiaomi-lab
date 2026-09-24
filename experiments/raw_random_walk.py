@@ -2,8 +2,8 @@
 """Exercise the MIoT direct controller through raw miIO commands.
 
 This deliberately bypasses G1Vacuum.set_property_by() and sends the underlying
-set_properties request through raw_command(). The robot is stopped before the
-sequence and again in a finally block.
+MIoT requests through raw_command(). The robot is stopped before the sequence,
+stopped again on exit, and then sent to the dock by default.
 
 Every command/response is persisted as a CSV table so the run can be analyzed
 later with pandas or any spreadsheet tool.
@@ -68,7 +68,21 @@ def raw_direction(vac, direction: str):
     return vac.raw_command("set_properties", payload)
 
 
+def raw_dock(vac):
+    return vac.raw_command(
+        "action",
+        {
+            "did": "raw-call-2-3",
+            "siid": 2,
+            "aiid": 3,
+            "in": [],
+        },
+    )
+
+
 def response_code(response):
+    if isinstance(response, dict):
+        return response.get("code")
     if (
         isinstance(response, list)
         and response
@@ -112,7 +126,7 @@ def write_row(
             "step": step,
             "phase": phase,
             "direction": direction,
-            "value": DIRECTIONS[direction],
+            "value": DIRECTIONS.get(direction, ""),
             "requested_pulse_s": "" if pulse is None else f"{pulse:.6f}",
             "response_code": response_code(response),
             "response_json": json.dumps(response, separators=(",", ":"), sort_keys=True),
@@ -174,6 +188,11 @@ def main() -> None:
         default=None,
         help="CSV output path; defaults to data/raw_random_walk_<timestamp>.csv",
     )
+    parser.add_argument(
+        "--no-dock",
+        action="store_true",
+        help="do not send the final return-to-dock action",
+    )
     args = parser.parse_args()
 
     if args.duration <= 0:
@@ -203,6 +222,8 @@ def main() -> None:
             )
             elapsed += pulse + args.pause
         print("final=stop")
+        if not args.no_dock:
+            print("final=dock")
         print("No CSV is written for dry-run mode.")
         print("Re-run with --apply only with the robot on open floor away from stairs.")
         return
@@ -293,6 +314,23 @@ def main() -> None:
                 handle.flush()
             except Exception as exc:
                 print(f"final_stop_failed={type(exc).__name__}: {exc}", file=sys.stderr)
+
+            if not args.no_dock:
+                try:
+                    dock_response = raw_dock(vac)
+                    print("dock_response=", dock_response)
+                    write_row(
+                        writer,
+                        started=started,
+                        step=step,
+                        phase="dock",
+                        direction="dock",
+                        pulse=None,
+                        response=dock_response,
+                    )
+                    handle.flush()
+                except Exception as exc:
+                    print(f"dock_failed={type(exc).__name__}: {exc}", file=sys.stderr)
 
     print(f"csv={output_path}")
 
