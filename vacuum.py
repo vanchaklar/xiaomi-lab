@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from miio.integrations.vacuum.mijia import G1Vacuum
 
 
+load_dotenv(Path(__file__).with_name(".env"))
+
+
 def connect() -> G1Vacuum:
-    """Create a G1Vacuum from local environment variables."""
+    """Create a G1Vacuum from .env or process environment variables."""
     ip = os.environ.get("VACUUM_IP")
     token = os.environ.get("VACUUM_TOKEN")
 
