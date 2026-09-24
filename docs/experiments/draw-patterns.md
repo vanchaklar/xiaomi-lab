@@ -1,7 +1,8 @@
 # Drawn path patterns
 
 This controller is separate from gyro control. You draw a geometric path directly on
-the phone screen, save it by name, and replay it later.
+the phone screen, convert it into a command sequence, edit that sequence, save it by
+name, and replay it later.
 
 ## Run
 
@@ -19,57 +20,84 @@ http://127.0.0.1:8766/
 
 - the first point is the robot's current position;
 - **up** on the canvas is the robot's current forward direction;
-- the drawn line is simplified into straight segments;
-- for each segment the controller:
-  1. turns left/right toward that segment;
-  2. stops;
-  3. drives forward for the segment distance;
-  4. stops;
-  5. continues with the next segment.
+- **BUILD COMMANDS** simplifies the drawn line and converts it into explicit
+  `left`, `right`, `forward`, and `stop` rows.
 
-The robot exposes discrete direction-key commands, not wheel velocity or a target XY
-position, so playback is open-loop.
+## Editable command sequence
+
+The generated sequence is shown as a table before playback. Every row has:
+
+- command number;
+- direction;
+- duration in seconds;
+- move-up / move-down / delete controls.
+
+You can also add commands manually with **ADD COMMAND**.
+
+The table is the source of truth for playback. Editing the table changes exactly what
+will be sent to the robot; the drawing is only a convenient way to generate an initial
+sequence.
+
+Example:
+
+```text
+1  right    0.75
+2  stop     0.08
+3  forward  3.20
+4  stop     0.08
+5  left     1.10
+6  stop     0.08
+7  forward  2.45
+8  stop     0.08
+```
 
 ## Calibration
 
-Two values determine how the drawing becomes motion:
+The automatic drawing-to-command conversion uses:
 
-- **Forward seconds per canvas width**: how long the robot should drive forward for a
-  line equal to the full canvas width.
-- **Turn seconds per 90°**: how long a 90-degree left/right rotation takes.
+- **Forward seconds per canvas width**
+- **Turn seconds per 90°**
+- **Stop between generated commands**
+- **Simplify tolerance**
 
-These are deliberately editable because hard floor and carpet can require different
-calibration.
-
-The default values are only initial UI values. Measure and tune them before relying on
-the path shape.
+After **BUILD COMMANDS**, you can edit every generated duration manually.
 
 ## Save and load
 
-Saved patterns are JSON files under:
+Saved JSON patterns contain both:
+
+```text
+points
+commands
+```
+
+so manual command edits survive reloads.
+
+Patterns are stored locally under:
 
 ```text
 data/patterns/
 ```
 
-Coordinates are normalized to 0..1, so patterns are independent of phone screen size.
-
-The `data/` directory should remain local and not be committed.
+Coordinates are normalized to 0..1, so drawings remain independent of phone screen size.
+The `data/` directory is ignored by Git.
 
 ## Playback
 
-Movement commands are refreshed every 0.25 seconds by default because the vacuum treats
-the direction-key write as momentary.
+**PLAY COMMANDS** executes the currently visible table in order.
+
+A non-stop row is repeatedly written every 0.25 seconds by default for the duration of
+that row, because this vacuum treats direction-key writes as momentary.
 
 ```bash
 python experiments/draw_pattern_control.py --repeat 0.20
 ```
 
-Use **STOP** to cancel a pattern immediately. **DOCK** cancels playback, stops, and sends
+Use **STOP** to cancel immediately. **DOCK** cancels playback, stops, and sends
 return-to-dock.
 
 ## Limitation relevant to carpet drift
 
-A saved drawing is a command pattern, not a localization solution. On carpet, wheel slip
-can still make the physical path diverge from the drawing. That divergence is useful for
-measuring the carpet error once the hard-floor timing is calibrated.
+A saved sequence is open-loop. It reproduces the command pattern, not an absolute
+trajectory. Running the exact same saved sequence on hard floor and carpet is therefore
+a useful way to quantify how much the carpet changes the robot's physical response.
