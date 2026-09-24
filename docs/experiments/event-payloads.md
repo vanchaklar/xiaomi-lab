@@ -64,3 +64,26 @@ carpet.
   cue establishes that correspondence.
 
 This experiment does not change any property or action.
+
+
+## Result on firmware 2.2.1
+
+Direct `get_properties` requests returned:
+
+```text
+7/1   map_points            -> code -4004
+9/6   current_clean_record  -> code -4004
+16/2  temp_log              -> code -4004
+```
+
+MIoT defines `-4004` as **other internal error**, not specifically "property is not
+readable" (that code is `-4001`). However, these three properties are also defined by
+the model spec without ordinary read access and are used as event payloads. Operationally,
+firmware 2.2.1 therefore does not expose them through direct polling.
+
+The next path is event/notification capture.
+
+The same test run also saw transient `Unable to discover the device` exceptions on the
+first ordinary control reads before later requests succeeded. The probe now primes the miIO
+session with `miIO.info` and retries a failed read once so transport startup errors are kept
+separate from actual MIoT property responses.
