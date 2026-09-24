@@ -24,7 +24,7 @@ Understand and mitigate carpet-only navigation drift on a Xiaomi Mi Robot Vacuum
 
 Prefer observation and reversible experiments before firmware changes:
 
-1. Probe event-backing payloads for map points, clean records, and the localization-oriented temp-log event to understand how pose error develops.
+1. Direct polling of the three event-backed payloads is now tested: `7/1`, `9/6`, and `16/2` all return MIoT code `-4004` on firmware 2.2.1, so move to event/notification capture rather than `get_properties` polling.
 2. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
 3. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
 4. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
