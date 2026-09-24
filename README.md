@@ -49,6 +49,5 @@ Apply the reversible toggle:
 python experiments/map_toggle.py --apply
 ```
 
-See `docs/experiments/map-toggle.md` for interpretation. A successful toggle only proves
-that the property is writable; the later dock/carpet A/B test determines whether it actually
-re-anchors navigation.
+The toggle has now been verified writable on firmware 2.2.1. The active next step is the
+control-vs-toggle dock/carpet A/B test in `docs/experiments/reanchor-ab.md`.
