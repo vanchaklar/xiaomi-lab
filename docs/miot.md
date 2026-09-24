@@ -98,3 +98,21 @@ A read-only probe against the confirmed device returned successful `code: 0` res
 The key result for the navigation work is that `map_switch` is not merely present in the public MIoT description: firmware 2.2.1 responds to it successfully.
 
 These values are snapshots, not constants. In particular, status, battery, charging, and user-configurable settings vary with device state.
+
+
+## Event-only navigation data worth probing
+
+The same public model specification exposes event-backed values that are not ordinary readable
+properties:
+
+| Service | Event | Event ID | Payload property |
+| --- | --- | --- | --- |
+| map (7) | `map-points` | EIIDs 1 | `points` at PIID 1 |
+| clean-record (9) | `current-clean-record` | EIID 1 | PIID 6 |
+| other-status (16) | `temp-log` | EIID 1 | `log-str` at PIID 2 |
+
+The `temp-log` description explicitly relates it to analysis/localization. That makes it the
+highest-value telemetry candidate for the carpet-drift investigation.
+
+Use `experiments/event_payload_probe.py` to test whether firmware 2.2.1 allows these backing
+properties to be read directly before implementing event subscription/capture.
