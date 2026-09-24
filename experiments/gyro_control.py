@@ -5,12 +5,16 @@ The browser uses DeviceOrientation (fused gyro/accelerometer orientation) and
 posts tilt samples to this local HTTP server. The server converts them into the
 vacuum's MIoT direction-key writes.
 
+The vacuum treats direction-key writes as momentary commands, so while armed the
+server continuously re-sends the selected non-stop direction at a configurable
+interval.
+
 Safety:
 - starts disarmed;
 - explicit STOP button;
 - watchdog stops the robot if tilt samples stop arriving;
 - final stop on server shutdown;
-- logs all received samples and command responses to CSV.
+- logs sensor samples and command responses to CSV.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ DIRECTIONS = {
 FIELDNAMES = [
     "timestamp_utc",
     "elapsed_s",
+    "source",
     "armed",
     "beta",
     "gamma",
@@ -110,7 +115,6 @@ let beta = 0, gamma = 0, beta0 = 0, gamma0 = 0;
 let haveSensor = false;
 let armed = false;
 let lastSend = 0;
-let lastDirection = "stop";
 
 const el = id => document.getElementById(id);
 
@@ -172,7 +176,6 @@ async function sendSample(force=false) {
     });
     el("state").textContent =
       (armed ? "armed" : "disarmed") + " / robot: " + result.direction;
-    lastDirection = result.direction;
   } catch (e) {
     el("state").textContent = "connection error";
     armed = false;
@@ -257,14 +260,18 @@ window.addEventListener("beforeunload", () => {
 
 
 class Controller:
-    def __init__(self, vac, csv_path: Path, watchdog_s: float):
+    def __init__(self, vac, csv_path: Path, watchdog_s: float, repeat_s: float):
         self.vac = vac
         self.lock = threading.Lock()
         self.started = time.monotonic()
-        self.last_sample = time.monotonic()
+        self.last_sample_at = time.monotonic()
+        self.last_command_at = 0.0
         self.last_direction = "stop"
+        self.desired_direction = "stop"
+        self.last_sample = {}
         self.armed = False
         self.watchdog_s = watchdog_s
+        self.repeat_s = repeat_s
         self.stop_event = threading.Event()
 
         csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,8 +281,8 @@ class Controller:
         self.handle.flush()
         self.csv_path = csv_path
 
-        self.watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
-        self.watchdog.start()
+        self.control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self.control_thread.start()
 
     def _raw_direction(self, direction: str):
         payload = [{
@@ -284,7 +291,10 @@ class Controller:
             "piid": DIRECTION_PIID,
             "value": DIRECTIONS[direction],
         }]
-        return self.vac.raw_command("set_properties", payload)
+        response = self.vac.raw_command("set_properties", payload)
+        self.last_command_at = time.monotonic()
+        self.last_direction = direction
+        return response
 
     @staticmethod
     def _code(response):
@@ -294,11 +304,12 @@ class Controller:
             return response.get("code")
         return None
 
-    def _log(self, sample, direction, response):
+    def _log(self, sample, direction, response, source):
         self.writer.writerow({
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_s": f"{time.monotonic() - self.started:.6f}",
-            "armed": bool(sample.get("armed", False)),
+            "source": source,
+            "armed": self.armed,
             "beta": sample.get("beta"),
             "gamma": sample.get("gamma"),
             "delta_beta": sample.get("delta_beta"),
@@ -315,49 +326,73 @@ class Controller:
             direction = "stop"
 
         with self.lock:
-            self.last_sample = time.monotonic()
+            self.last_sample_at = time.monotonic()
+            self.last_sample = dict(sample)
             self.armed = bool(sample.get("armed", False))
-            if not self.armed:
-                direction = "stop"
+            self.desired_direction = direction if self.armed else "stop"
 
             response = None
-            if direction != self.last_direction:
-                response = self._raw_direction(direction)
-                self.last_direction = direction
 
-            self._log(sample, direction, response)
-            return direction, response
+            # Apply direction changes immediately. Non-stop directions are then
+            # refreshed by _control_loop so the vacuum keeps executing them.
+            if self.desired_direction != self.last_direction:
+                response = self._raw_direction(self.desired_direction)
+                self._log(sample, self.desired_direction, response, "direction_change")
+            else:
+                self._log(sample, self.desired_direction, None, "sensor")
+
+            return self.desired_direction, response
 
     def stop(self):
         with self.lock:
             response = self._raw_direction("stop")
-            self.last_direction = "stop"
+            self.desired_direction = "stop"
             self.armed = False
+            self._log(self.last_sample, "stop", response, "explicit_stop")
             return response
 
     def dock(self):
         with self.lock:
-            self._raw_direction("stop")
-            self.last_direction = "stop"
+            stop_response = self._raw_direction("stop")
+            self.desired_direction = "stop"
             self.armed = False
+            self._log(self.last_sample, "stop", stop_response, "dock_stop")
             return self.vac.raw_command(
                 "action",
                 {"did": "gyro-call-2-3", "siid": 2, "aiid": 3, "in": []},
             )
 
-    def _watchdog_loop(self):
-        while not self.stop_event.wait(0.1):
+    def _control_loop(self):
+        tick = min(0.05, max(0.01, self.repeat_s / 4.0))
+        while not self.stop_event.wait(tick):
             with self.lock:
-                stale = self.armed and (time.monotonic() - self.last_sample > self.watchdog_s)
-                if stale:
+                now = time.monotonic()
+
+                if self.armed and (now - self.last_sample_at > self.watchdog_s):
                     try:
-                        self._raw_direction("stop")
+                        response = self._raw_direction("stop")
+                        self._log(self.last_sample, "stop", response, "watchdog")
                     finally:
-                        self.last_direction = "stop"
+                        self.desired_direction = "stop"
                         self.armed = False
+                    continue
+
+                if (
+                    self.armed
+                    and self.desired_direction != "stop"
+                    and now - self.last_command_at >= self.repeat_s
+                ):
+                    response = self._raw_direction(self.desired_direction)
+                    self._log(
+                        self.last_sample,
+                        self.desired_direction,
+                        response,
+                        "repeat",
+                    )
 
     def close(self):
         self.stop_event.set()
+        self.control_thread.join(timeout=1.0)
         try:
             self.stop()
         finally:
@@ -427,14 +462,27 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--watchdog", type=float, default=0.6)
+    parser.add_argument(
+        "--repeat",
+        type=float,
+        default=0.25,
+        help="seconds between repeated non-stop direction commands (default: 0.25)",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
+
+    if args.watchdog <= 0:
+        parser.error("--watchdog must be positive")
+    if args.repeat <= 0:
+        parser.error("--repeat must be positive")
+    if args.repeat >= args.watchdog:
+        parser.error("--repeat must be smaller than --watchdog")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = args.output or (REPO_ROOT / "data" / f"gyro_control_{stamp}.csv")
 
     vac = connect()
-    controller = Controller(vac, output, args.watchdog)
+    controller = Controller(vac, output, args.watchdog, args.repeat)
     Handler.controller = controller
     server = ThreadingHTTPServer((args.host, args.port), Handler)
 
@@ -446,6 +494,7 @@ def main():
 
     print(f"Open on this phone: http://127.0.0.1:{args.port}/")
     print(f"CSV log: {output}")
+    print(f"Direction repeat interval: {args.repeat:.3f}s")
     print("Starts disarmed. Calibrate neutral, verify preview direction, then ARM.")
 
     try:
