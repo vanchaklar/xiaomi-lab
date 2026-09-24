@@ -52,3 +52,16 @@ python experiments/map_toggle.py --apply
 The map-switch A/B test is complete: carpet drift still occurs in both conditions, so toggling
 that property is not a useful calibration mechanism. The active next step is probing the model's
 event-backed map and localization telemetry in `docs/experiments/event-payloads.md`.
+
+
+## Raw direct-controller test
+
+A guarded random-walk experiment is available at:
+
+```bash
+python experiments/raw_random_walk.py --duration 5
+python experiments/raw_random_walk.py --apply --duration 5
+```
+
+It uses `raw_command("set_properties", ...)` directly and always sends an explicit stop
+between pulses and on exit.
