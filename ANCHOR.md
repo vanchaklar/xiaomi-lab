@@ -16,6 +16,7 @@ Understand and mitigate carpet-only navigation drift on a Xiaomi Mi Robot Vacuum
 - `python-miio==0.5.12` is the currently tested client.
 - OTA state reads as idle when no update is active.
 - Firmware 2.2.1 responds successfully to all currently probed published MIoT properties, including `map_switch` at SIID 7 / PIID 2.
+- A guarded dock-only map-switch toggle experiment is now implemented; its result is not yet known.
 
 ## Working direction
 
