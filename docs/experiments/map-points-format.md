@@ -89,3 +89,21 @@ http://127.0.0.1:8768/
 
 The display has a Flip Y control because the app's screen coordinate convention
 has not yet been confirmed.
+
+
+## Layer/update behavior
+
+The longer capture shows that the same coordinate can receive several types over
+time, sometimes even inside one packet. Therefore the third field is not simply
+a permanent class assigned once to each grid cell.
+
+The UI keeps two views of the data:
+
+- the latest value for each `(x,y)`, used for the main raster;
+- persistent per-type observations for the current redraw generation.
+
+Type 4 is important enough that the visualizer now preserves every coordinate
+that has been observed as type 4 and draws it as a challenge overlay even if a
+later packet changes that coordinate to another type. Repeated type-4 hits are
+also counted, which gives us a useful measure of how persistently the firmware
+classified that location as challenging.
