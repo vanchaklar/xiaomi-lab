@@ -26,12 +26,13 @@ Prefer observation and reversible experiments before firmware changes:
 
 1. Direct polling of `7/1`, `9/6`, and `16/2` returns MIoT `-4004`. The device advertises `MSUB/PUB` subscription type 1 but rejects direct-LAN `miIO.sub` for wildcard `.`, `event_occured`, and `properties_changed` with `-10`. Cloud MQTT probing is more promising: only the `i2` broker has so far granted QoS 2 for both event and property subscriptions for the current OAuth token/DID; the other tested brokers rejected the SUBACK.
 2. A read-only MIoT property brute-force scanner now covers arbitrary SIID/PIID ranges (including full 1..255 exhaustive mode). The current scan's successful reads match the published readable surface; `-4003` is treated as nonexistent, while `-4001`/`-4004` remain discovery candidates because event-backed properties return `-4004`.
-3. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
-4. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
-5. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
-6. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
-7. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
-8. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
+3. A cloud event control UI now combines the authorized cloud event listener with local START/STOP/DOCK controls and a live event feed, so a capture can initiate its own cleaning run without switching back to Xiaomi Home.
+4. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
+5. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
+6. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
+7. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
+8. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
+9. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
 
 ## Constraints
 
