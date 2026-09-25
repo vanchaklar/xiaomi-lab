@@ -49,7 +49,9 @@ button { font-size:18px; padding:14px 18px; margin:6px; border-radius:10px; bord
 #start { background:#2d7; }
 #stop { background:#e44; color:white; }
 #dock { background:#58c; color:white; }
-#events { white-space:pre-wrap; overflow-wrap:anywhere; font-family:monospace; font-size:12px; max-height:55vh; overflow:auto; }
+#map { width:100%; height:52vh; min-height:320px; background:#090909; border-radius:8px; touch-action:none; }
+#legend { font-family:monospace; font-size:12px; margin-top:8px; }
+#events { white-space:pre-wrap; overflow-wrap:anywhere; font-family:monospace; font-size:12px; max-height:38vh; overflow:auto; }
 .bad { color:#f88; }
 .good { color:#8f8; }
 small { color:#bbb; }
@@ -75,6 +77,13 @@ small { color:#bbb; }
   <button id="dock">DOCK</button>
   <div id="result"></div>
   <small>Controls are sent over the local miIO connection. Cloud events remain read-only.</small>
+</div>
+
+<div class="card">
+  <div>Decoded map triples: <span id="mapcount">0</span> &nbsp; generation: <span id="generation">0</span></div>
+  <label><input id="flipy" type="checkbox" checked> flip Y for display</label>
+  <canvas id="map"></canvas>
+  <div id="legend">waiting for 7/1 map_points...</div>
 </div>
 
 <div class="card">
@@ -114,6 +123,75 @@ async function refreshState() {
   }
 }
 
+function typeColor(type) {
+  const hue = ((Number(type) || 0) * 67) % 360;
+  return "hsl(" + hue + " 80% 60%)";
+}
+
+async function refreshMap() {
+  try {
+    const data = await getJSON("/api/map");
+    el("mapcount").textContent = data.point_count;
+    el("generation").textContent = data.generation;
+
+    const canvas = el("map");
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(320, canvas.clientWidth);
+    const height = Math.max(320, canvas.clientHeight);
+    const pxw = Math.round(width * dpr);
+    const pxh = Math.round(height * dpr);
+    if (canvas.width !== pxw || canvas.height !== pxh) {
+      canvas.width = pxw;
+      canvas.height = pxh;
+    }
+
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    if (!data.points.length) {
+      el("legend").textContent = "waiting for 7/1 map_points...";
+      return;
+    }
+
+    let minX = data.bounds.min_x, maxX = data.bounds.max_x;
+    let minY = data.bounds.min_y, maxY = data.bounds.max_y;
+    if (minX === maxX) { minX -= 1; maxX += 1; }
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+
+    const pad = 24;
+    const sx = (width - pad * 2) / (maxX - minX + 1);
+    const sy = (height - pad * 2) / (maxY - minY + 1);
+    const scale = Math.max(2, Math.min(sx, sy));
+    const drawW = (maxX - minX + 1) * scale;
+    const drawH = (maxY - minY + 1) * scale;
+    const ox = (width - drawW) / 2;
+    const oy = (height - drawH) / 2;
+    const flipY = el("flipy").checked;
+
+    for (const p of data.points) {
+      const x = ox + (p.x - minX) * scale;
+      const yIndex = flipY ? (maxY - p.y) : (p.y - minY);
+      const y = oy + yIndex * scale;
+      ctx.fillStyle = typeColor(p.type);
+      const s = Math.max(2, Math.min(8, scale));
+      ctx.fillRect(x, y, s, s);
+    }
+
+    const legendParts = Object.entries(data.type_counts)
+      .sort((a,b) => Number(a[0]) - Number(b[0]))
+      .map(([type,count]) =>
+        "type " + type + ": " + count
+      );
+    el("legend").textContent =
+      "bounds x=" + minX + ".." + maxX +
+      " y=" + minY + ".." + maxY +
+      " | " + legendParts.join(" | ");
+  } catch (e) {
+    el("legend").textContent = "map error: " + e;
+  }
+}
+
 async function refreshEvents() {
   try {
     const data = await getJSON("/api/events?since=" + lastSeq);
@@ -150,8 +228,12 @@ el("dock").onclick = () => act("dock");
 
 setInterval(refreshState, 1200);
 setInterval(refreshEvents, 500);
+setInterval(refreshMap, 350);
+el("flipy").onchange = refreshMap;
+window.addEventListener("resize", refreshMap);
 refreshState();
 refreshEvents();
+refreshMap();
 </script>
 </body>
 </html>
@@ -172,12 +254,68 @@ class ExperimentController:
         self.total_events = 0
         self.last_action = None
         self.mode = "idle"
+        self.map_lock = threading.Lock()
+        self.map_generation = 0
+        self.map_cells: dict[tuple[int, int], int] = {}
+        self.map_triplet_count = 0
 
     @property
     def regions(self) -> list[str]:
         return [listener.region for listener in self.listeners]
 
+    @staticmethod
+    def _decode_map_points(payload) -> list[tuple[int, int, int]]:
+        if not isinstance(payload, dict):
+            return []
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            return []
+        arguments = params.get("arguments")
+        if not isinstance(arguments, list):
+            return []
+
+        point_string = None
+        for argument in arguments:
+            if (
+                isinstance(argument, dict)
+                and argument.get("piid") == 1
+                and isinstance(argument.get("value"), str)
+            ):
+                point_string = argument["value"]
+                break
+        if point_string is None:
+            return []
+
+        try:
+            values = [int(value) for value in point_string.split()]
+        except ValueError:
+            return []
+        if len(values) % 3:
+            return []
+
+        return [
+            (values[index], values[index + 1], values[index + 2])
+            for index in range(0, len(values), 3)
+        ]
+
     def add_event(self, region: str, event: dict) -> None:
+        siid = event.get("siid")
+        iid = event.get("iid")
+
+        if event.get("kind") == "event_occured" and siid == 7 and iid == 2:
+            with self.map_lock:
+                self.map_generation += 1
+                self.map_cells.clear()
+                self.map_triplet_count = 0
+
+        if event.get("kind") == "event_occured" and siid == 7 and iid == 1:
+            points = self._decode_map_points(event.get("payload"))
+            if points:
+                with self.map_lock:
+                    self.map_triplet_count += len(points)
+                    for x, y, point_type in points:
+                        self.map_cells[(x, y)] = point_type
+
         with self.event_lock:
             self.seq += 1
             self.total_events += 1
@@ -186,8 +324,8 @@ class ExperimentController:
                     "seq": self.seq,
                     "region": region,
                     "kind": event.get("kind"),
-                    "siid": event.get("siid"),
-                    "iid": event.get("iid"),
+                    "siid": siid,
+                    "iid": iid,
                     "name": event.get("name"),
                     "payload": event.get("payload"),
                     "timestamp_utc": event.get("timestamp_utc"),
@@ -248,6 +386,43 @@ class ExperimentController:
                 "total": self.total_events,
             }
 
+    def map_payload(self):
+        with self.map_lock:
+            points = [
+                {"x": x, "y": y, "type": point_type}
+                for (x, y), point_type in self.map_cells.items()
+            ]
+            if points:
+                xs = [point["x"] for point in points]
+                ys = [point["y"] for point in points]
+                bounds = {
+                    "min_x": min(xs),
+                    "max_x": max(xs),
+                    "min_y": min(ys),
+                    "max_y": max(ys),
+                }
+            else:
+                bounds = {
+                    "min_x": 0,
+                    "max_x": 0,
+                    "min_y": 0,
+                    "max_y": 0,
+                }
+
+            type_counts = {}
+            for point in points:
+                key = str(point["type"])
+                type_counts[key] = type_counts.get(key, 0) + 1
+
+            return {
+                "generation": self.map_generation,
+                "triplet_count": self.map_triplet_count,
+                "point_count": len(points),
+                "bounds": bounds,
+                "type_counts": type_counts,
+                "points": points,
+            }
+
     def close(self):
         for listener in self.listeners:
             try:
@@ -292,6 +467,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/status":
             self._json(200, self.controller.status())
+            return
+
+        if path == "/api/map":
+            self._json(200, self.controller.map_payload())
             return
 
         if path == "/api/events":
