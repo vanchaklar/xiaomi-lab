@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""Listen to Xiaomi Cloud MIoT events for the vacuum.
+
+This targets the same cloud MIPS/MQTT event channel used by Xiaomi's current
+Home Assistant integration:
+
+    device/<did>/up/event_occured/<siid>/<eiid>
+
+First-time use performs Xiaomi OAuth in the terminal and stores the resulting
+OAuth token under data/ (gitignored). The local vacuum token remains in .env.
+
+This experiment does not send cleaning actions or modify vacuum settings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import secrets
+import ssl
+import sys
+import threading
+import time
+import uuid as uuidlib
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
+
+import paho.mqtt.client as mqtt
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from vacuum import connect, safe_info
+
+
+OAUTH_CLIENT_ID = "2882303761520251711"
+OAUTH_AUTH_URL = "https://account.xiaomi.com/oauth2/authorize"
+OAUTH_API_HOST = "ha.api.io.mi.com"
+MQTT_HOST = "ha.mqtt.io.mi.com"
+MQTT_PORT = 8883
+
+REGIONS = ("cn", "de", "i2", "ru", "sg", "us")
+
+AUTH_PATH = REPO_ROOT / "data" / "xiaomi_cloud_auth.json"
+
+EVENT_NAMES = {
+    (7, 1): "map_points",
+    (7, 2): "redraw_map",
+    (9, 1): "current_clean_record",
+    (16, 1): "temp_log",
+}
+
+CSV_FIELDS = [
+    "timestamp_utc",
+    "elapsed_s",
+    "topic",
+    "kind",
+    "siid",
+    "iid",
+    "name",
+    "payload_json",
+]
+
+
+def api_host(region: str) -> str:
+    return OAUTH_API_HOST if region == "cn" else f"{region}.{OAUTH_API_HOST}"
+
+
+def mqtt_host(region: str) -> str:
+    return f"{region}-{MQTT_HOST}"
+
+
+def oauth_redirect_url(run_uuid: str) -> str:
+    # Xiaomi's registered Home Assistant OAuth client accepts webhook paths
+    # under this redirect origin.
+    return (
+        "http://homeassistant.local:8123/api/webhook/"
+        f"xiaomi-lab-{run_uuid}"
+    )
+
+
+def oauth_state(run_uuid: str) -> str:
+    device_id = f"ha.{run_uuid}"
+    return hashlib.sha1(f"d={device_id}".encode("utf-8")).hexdigest()
+
+
+def auth_url(region: str, run_uuid: str) -> tuple[str, str, str]:
+    redirect = oauth_redirect_url(run_uuid)
+    state = oauth_state(run_uuid)
+    params = {
+        "redirect_uri": redirect,
+        "client_id": OAUTH_CLIENT_ID,
+        "response_type": "code",
+        "device_id": f"ha.{run_uuid}",
+        "state": state,
+        "skip_confirm": "false",
+    }
+    return f"{OAUTH_AUTH_URL}?{urlencode(params)}", redirect, state
+
+
+def token_request(region: str, data: dict) -> dict:
+    query = urlencode({"data": json.dumps(data, separators=(",", ":"))})
+    url = f"https://{api_host(region)}/app/v2/ha/oauth/get_token?{query}"
+    req = Request(
+        url,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        method="GET",
+    )
+
+    with urlopen(req, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+
+    obj = json.loads(raw)
+    if obj.get("code") != 0 or not isinstance(obj.get("result"), dict):
+        raise RuntimeError(f"OAuth token exchange failed: {obj!r}")
+
+    result = obj["result"]
+    if "access_token" not in result:
+        raise RuntimeError(f"OAuth response has no access_token: {obj!r}")
+
+    expires_in = int(result.get("expires_in", 0))
+    return {
+        **result,
+        "expires_ts": int(time.time()) + expires_in,
+    }
+
+
+def save_auth(auth: dict) -> None:
+    AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AUTH_PATH.write_text(json.dumps(auth, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(AUTH_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def load_auth(region: str) -> dict | None:
+    if not AUTH_PATH.exists():
+        return None
+    try:
+        auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if auth.get("region") != region:
+        return None
+    return auth
+
+
+def parse_oauth_code(value: str, expected_state: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("empty OAuth result")
+
+    if "://" not in value:
+        return value
+
+    parsed = urlparse(value)
+    params = parse_qs(parsed.query)
+    code = params.get("code", [""])[0]
+    state = params.get("state", [""])[0]
+
+    if not code:
+        raise ValueError("redirect URL does not contain code=")
+    if state and state != expected_state:
+        raise ValueError("OAuth state mismatch")
+    return code
+
+
+def interactive_login(region: str) -> dict:
+    run_uuid = uuidlib.uuid4().hex
+    url, redirect, expected_state = auth_url(region, run_uuid)
+
+    print("\nOpen this URL in a browser and authorize Xiaomi Home:")
+    print(url)
+    print()
+    print(
+        "The final redirect may fail to load at homeassistant.local. "
+        "That is fine. Copy the final address-bar URL and paste it here."
+    )
+    entered = input("redirect URL or code> ")
+    code = parse_oauth_code(entered, expected_state)
+
+    token = token_request(
+        region,
+        {
+            "client_id": OAUTH_CLIENT_ID,
+            "redirect_uri": redirect,
+            "code": code,
+            "device_id": f"ha.{run_uuid}",
+        },
+    )
+
+    auth = {
+        "region": region,
+        "uuid": run_uuid,
+        "redirect_url": redirect,
+        **token,
+    }
+    save_auth(auth)
+    return auth
+
+
+def refresh_auth(auth: dict) -> dict:
+    refresh_token = auth.get("refresh_token")
+    if not refresh_token:
+        return auth
+
+    token = token_request(
+        auth["region"],
+        {
+            "client_id": OAUTH_CLIENT_ID,
+            "redirect_uri": auth["redirect_url"],
+            "refresh_token": refresh_token,
+        },
+    )
+    refreshed = {**auth, **token}
+    save_auth(refreshed)
+    return refreshed
+
+
+def get_auth(region: str, force_login: bool = False) -> dict:
+    env_token = os.environ.get("XIAOMI_CLOUD_ACCESS_TOKEN", "").strip()
+    env_uuid = os.environ.get("XIAOMI_CLOUD_UUID", "").strip()
+
+    if env_token:
+        return {
+            "region": region,
+            "uuid": env_uuid or uuidlib.uuid4().hex,
+            "access_token": env_token,
+            "expires_ts": 0,
+        }
+
+    auth = None if force_login else load_auth(region)
+    if auth is None:
+        return interactive_login(region)
+
+    expires_ts = int(auth.get("expires_ts", 0) or 0)
+    if expires_ts and expires_ts <= int(time.time()) + 300:
+        try:
+            auth = refresh_auth(auth)
+            print("OAuth token refreshed")
+        except Exception as exc:
+            print(
+                f"OAuth refresh failed ({type(exc).__name__}: {exc}); "
+                "starting a new login"
+            )
+            auth = interactive_login(region)
+
+    return auth
+
+
+def decode_topic(topic: str) -> tuple[str, int | None, int | None, str]:
+    parts = topic.split("/")
+
+    try:
+        up_index = parts.index("up")
+    except ValueError:
+        return "unknown", None, None, "unknown"
+
+    if up_index + 1 >= len(parts):
+        return "unknown", None, None, "unknown"
+
+    kind = parts[up_index + 1]
+
+    try:
+        siid = int(parts[up_index + 2])
+        iid = int(parts[up_index + 3])
+    except (IndexError, ValueError):
+        siid = None
+        iid = None
+
+    if kind == "event_occured":
+        name = EVENT_NAMES.get((siid, iid), "event")
+    elif kind == "properties_changed":
+        name = "property"
+    else:
+        name = kind
+
+    return kind, siid, iid, name
+
+
+class CloudListener:
+    def __init__(
+        self,
+        *,
+        region: str,
+        run_uuid: str,
+        access_token: str,
+        did: str,
+        output: Path,
+        debug: bool = False,
+    ) -> None:
+        self.region = region
+        self.did = did
+        self.output = output
+        self.started = time.monotonic()
+        self.connected = threading.Event()
+        self.subscribed = threading.Event()
+        self.failed_reason: str | None = None
+        self.debug = debug
+
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = output.open("w", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(self.handle, fieldnames=CSV_FIELDS)
+        self.writer.writeheader()
+        self.handle.flush()
+
+        self.client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=f"ha.{run_uuid}",
+            protocol=mqtt.MQTTv5,
+        )
+        self.client.username_pw_set(
+            username=OAUTH_CLIENT_ID,
+            password=access_token,
+        )
+        self.client.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        self.client.tls_insecure_set(False)
+
+        self.client.on_connect = self.on_connect
+        self.client.on_connect_fail = self.on_connect_fail
+        self.client.on_disconnect = self.on_disconnect
+        self.client.on_subscribe = self.on_subscribe
+        self.client.on_message = self.on_message
+
+        if debug:
+            self.client.enable_logger()
+
+    @property
+    def topics(self) -> list[tuple[str, int]]:
+        return [
+            (f"device/{self.did}/up/event_occured/#", 2),
+            (f"device/{self.did}/up/properties_changed/#", 2),
+        ]
+
+    def on_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code != 0:
+            self.failed_reason = f"MQTT connect rejected: {reason_code}"
+            self.connected.set()
+            return
+
+        print(f"mqtt_connected={mqtt_host(self.region)}:{MQTT_PORT}")
+        self.connected.set()
+
+        for topic, qos in self.topics:
+            result, mid = client.subscribe(topic, qos=qos)
+            print(f"subscribe topic={topic} result={result} mid={mid}")
+
+    def on_connect_fail(self, client, userdata):
+        self.failed_reason = "MQTT TCP/TLS connection failed"
+        self.connected.set()
+
+    def on_disconnect(
+        self,
+        client,
+        userdata,
+        disconnect_flags,
+        reason_code,
+        properties,
+    ):
+        if reason_code != 0:
+            print(f"mqtt_disconnected reason={reason_code}", file=sys.stderr)
+
+    def on_subscribe(
+        self,
+        client,
+        userdata,
+        mid,
+        reason_code_list,
+        properties,
+    ):
+        printable = [str(code) for code in reason_code_list]
+        print(f"subscribed mid={mid} reason_codes={printable}")
+        self.subscribed.set()
+
+    def on_message(self, client, userdata, msg):
+        try:
+            raw = msg.payload.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = json.dumps({"hex": msg.payload.hex()})
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {"raw": raw}
+
+        kind, siid, iid, name = decode_topic(msg.topic)
+
+        # Some broker messages carry the IDs only inside params.
+        if isinstance(payload, dict):
+            params = payload.get("params")
+            if isinstance(params, dict):
+                if siid is None and isinstance(params.get("siid"), int):
+                    siid = params["siid"]
+                if iid is None:
+                    key = "eiid" if kind == "event_occured" else "piid"
+                    if isinstance(params.get(key), int):
+                        iid = params[key]
+                if kind == "event_occured":
+                    name = EVENT_NAMES.get((siid, iid), name)
+
+        compact = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+        print(f"CLOUD {kind} {siid}/{iid} {name}: {compact}")
+
+        self.writer.writerow(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "elapsed_s": f"{time.monotonic() - self.started:.6f}",
+                "topic": msg.topic,
+                "kind": kind,
+                "siid": "" if siid is None else siid,
+                "iid": "" if iid is None else iid,
+                "name": name,
+                "payload_json": compact,
+            }
+        )
+        self.handle.flush()
+
+    def start(self) -> None:
+        host = mqtt_host(self.region)
+        print(f"mqtt_host={host}:{MQTT_PORT}")
+        self.client.connect(host, MQTT_PORT, keepalive=60)
+        self.client.loop_start()
+
+        if not self.connected.wait(15):
+            raise TimeoutError("timed out waiting for MQTT connection")
+        if self.failed_reason:
+            raise RuntimeError(self.failed_reason)
+
+    def stop(self) -> None:
+        try:
+            self.client.disconnect()
+            self.client.loop_stop()
+        finally:
+            self.handle.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--region",
+        default=os.environ.get("XIAOMI_CLOUD_REGION"),
+        choices=REGIONS,
+        help="Mi Home account region: cn/de/i2/ru/sg/us",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=60,
+        help="listen duration in seconds (default: 60; 0 = until Ctrl-C)",
+    )
+    parser.add_argument(
+        "--did",
+        default=None,
+        help="override cloud DID; default is the local miIO device id",
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="force a new Xiaomi OAuth login",
+    )
+    parser.add_argument(
+        "--auth-only",
+        action="store_true",
+        help="authenticate and save the OAuth token, then exit",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="CSV path; defaults under data/",
+    )
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+
+    if not args.region:
+        parser.error(
+            "--region is required unless XIAOMI_CLOUD_REGION is set "
+            "(cn/de/i2/ru/sg/us)"
+        )
+    if args.duration < 0:
+        parser.error("--duration must be >= 0")
+
+    auth = get_auth(args.region, force_login=args.login)
+    print(
+        f"cloud_auth=ok region={args.region} "
+        f"cached={AUTH_PATH.exists() and not bool(os.environ.get('XIAOMI_CLOUD_ACCESS_TOKEN'))}"
+    )
+
+    if args.auth_only:
+        return
+
+    vac = connect()
+    info = safe_info(vac)
+    did = args.did or str(vac.device_id)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output = args.output or (
+        REPO_ROOT / "data" / f"cloud_events_{stamp}.csv"
+    )
+
+    print(f"device={info['model']} firmware={info['firmware_version']}")
+    print(f"did={did}")
+    print(f"csv={output}")
+
+    listener = CloudListener(
+        region=args.region,
+        run_uuid=auth["uuid"],
+        access_token=auth["access_token"],
+        did=did,
+        output=output,
+        debug=args.debug,
+    )
+
+    try:
+        listener.start()
+        print(
+            "listening for cloud event_occured/properties_changed; "
+            "start a cleaning run now"
+        )
+
+        if args.duration == 0:
+            while True:
+                time.sleep(1)
+        else:
+            deadline = time.monotonic() + args.duration
+            while time.monotonic() < deadline:
+                time.sleep(min(1, deadline - time.monotonic()))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        listener.stop()
+
+
+if __name__ == "__main__":
+    main()
