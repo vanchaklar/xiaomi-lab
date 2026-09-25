@@ -64,3 +64,22 @@ or another state change. Therefore this scanner exhausts SIID/PIID reads only.
 
 Action IDs can be tested separately once there is an allowlist or a specific
 candidate worth invoking.
+
+
+## Error-code interpretation
+
+For discovery, the error classes are not equivalent:
+
+```text
+0      readable property
+-4001  property exists but is not readable
+-4003  property/action/event does not exist
+-4004  generic internal error
+```
+
+On this vacuum the published event-backing properties `7/1`, `9/6`, and
+`16/2` return `-4004`, so `-4004` is potentially interesting during a
+scan and should not be filtered out as if the address did not exist.
+
+The scanner now prints `-4001` and `-4004` addresses as `CANDIDATE` and
+uses `-4003` as the ordinary absent-address result.
