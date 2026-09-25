@@ -105,3 +105,18 @@ literally and may be rejected by the vacuum.
 
 The server keeps a short command log and reports each raw MIoT response in the
 UI. Nothing is sent automatically when the page loads.
+
+
+## MQTT reconnect behavior
+
+The Xiaomi broker can disconnect an otherwise working listener or the phone may
+miss keepalives while Android/Termux is busy. Paho reconnects automatically.
+
+After a reconnect, the listener now re-subscribes to the exact topic/QoS set that
+was previously authorized. Earlier versions reconnected the socket but did not
+restore subscriptions, so event capture silently stopped after the first
+disconnect.
+
+Browser polling may also be cancelled by Chrome while a response is being
+written. The UI server now treats `BrokenPipeError` and connection reset as a
+normal cancelled request instead of printing a traceback.
