@@ -62,6 +62,7 @@ small { color:#bbb; }
   <div>Device: <span id="device">...</span></div>
   <div>Cloud DID: <span id="did">...</span></div>
   <div>Broker regions: <span id="regions">...</span></div>
+  <div>Cloud errors: <span id="clouderrors">none</span></div>
   <div>Vacuum state: <span id="vacstate">...</span></div>
   <div>Battery: <span id="battery">...</span></div>
   <div>Last action: <span id="action">none</span></div>
@@ -99,7 +100,9 @@ async function refreshState() {
     const s = await getJSON("/api/status");
     el("device").textContent = s.model + " / " + s.firmware;
     el("did").textContent = s.did;
-    el("regions").textContent = s.regions.join(", ");
+    el("regions").textContent = s.regions.length ? s.regions.join(", ") : "none";
+    el("clouderrors").textContent =
+      Object.keys(s.cloud_errors).length ? JSON.stringify(s.cloud_errors) : "none";
     el("vacstate").textContent = JSON.stringify(s.state);
     el("battery").textContent = JSON.stringify(s.battery);
     el("action").textContent = s.last_action || "none";
@@ -158,6 +161,7 @@ class ExperimentController:
         self.info = info
         self.did = did
         self.listeners: list[CloudListener] = []
+        self.cloud_errors: dict[str, str] = {}
         self.events = deque(maxlen=500)
         self.event_lock = threading.Lock()
         self.action_lock = threading.Lock()
@@ -220,6 +224,7 @@ class ExperimentController:
             "firmware": self.info["firmware_version"],
             "did": self.did,
             "regions": self.regions,
+            "cloud_errors": dict(self.cloud_errors),
             "state": self.read_property(2, 1),
             "battery": self.read_property(3, 1),
             "last_action": self.last_action,
@@ -348,9 +353,13 @@ def resolve_did(vac, info, auth_region: str, access_token: str, override: str | 
             return did
 
         if len(matches) == 1:
-            did = str(matches[0]["did"])
-            print(f"did_source=cloud_model_match did={did} local_did={local_did}")
-            return did
+            cloud_did = str(matches[0]["did"])
+            print(
+                f"cloud_model_match_candidate={cloud_did} "
+                f"local_did={local_did}; keeping local DID because it previously "
+                "received authorized MQTT subscriptions"
+            )
+            return local_did
 
         if matches:
             print(
@@ -426,12 +435,17 @@ def main() -> None:
             listener.start()
         except Exception as exc:
             listener.stop()
-            print(f"region_failed={region} error={type(exc).__name__}: {exc}")
+            error = f"{type(exc).__name__}: {exc}"
+            controller.cloud_errors[region] = error
+            print(f"region_failed={region} error={error}")
             continue
         controller.listeners.append(listener)
 
     if not controller.listeners:
-        raise RuntimeError("no Xiaomi cloud event subscription was authorized")
+        print(
+            "WARNING: no Xiaomi cloud event subscription was authorized; "
+            "starting the control UI anyway so START/STOP/DOCK remain usable"
+        )
 
     if args.auto_start:
         response = controller.start_cleaning()
@@ -446,7 +460,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    print(f"connected_regions={','.join(controller.regions)}")
+    print(
+        "connected_regions="
+        + (",".join(controller.regions) if controller.regions else "none")
+    )
     print(f"Open on this phone: http://127.0.0.1:{args.port}/")
     print("UI controls cleaning and shows cloud events live.")
 
