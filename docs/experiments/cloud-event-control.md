@@ -120,3 +120,15 @@ disconnect.
 Browser polling may also be cancelled by Chrome while a response is being
 written. The UI server now treats `BrokenPipeError` and connection reset as a
 normal cancelled request instead of printing a traceback.
+
+
+## Complete device MQTT capture
+
+The underlying cloud listener now tries `device/<did>/#` before the narrower
+MIoT topics. When the broker grants it, the UI records the complete device MQTT
+subtree, including unknown topic families. Unknown topics remain in the CSV with
+their raw topic and payload instead of being discarded.
+
+If the broad wildcard is denied, capture falls back to Xiaomi's known
+`event_occured`, `properties_changed`, and `state` families, then to exact
+known vacuum events.
