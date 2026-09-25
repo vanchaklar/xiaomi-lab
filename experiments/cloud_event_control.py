@@ -296,6 +296,11 @@ function typeColor(type) {
   return "hsl(" + hue + " 80% 60%)";
 }
 
+function typeLabel(type) {
+  if (Number(type) === 4) return "challenging / entanglement-risk";
+  return "type " + type;
+}
+
 async function refreshMap() {
   try {
     const data = await getJSON("/api/map");
@@ -349,7 +354,7 @@ async function refreshMap() {
     const legendParts = Object.entries(data.type_counts)
       .sort((a,b) => Number(a[0]) - Number(b[0]))
       .map(([type,count]) =>
-        "type " + type + ": " + count
+        typeLabel(type) + ": " + count
       );
     el("legend").textContent =
       "bounds x=" + minX + ".." + maxX +
