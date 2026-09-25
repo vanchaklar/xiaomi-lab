@@ -27,13 +27,14 @@ Prefer observation and reversible experiments before firmware changes:
 1. Direct polling of `7/1`, `9/6`, and `16/2` returns MIoT `-4004`. The device advertises `MSUB/PUB` subscription type 1 but rejects direct-LAN `miIO.sub` for wildcard `.`, `event_occured`, and `properties_changed` with `-10`. Cloud MQTT probing is more promising: only the `i2` broker has so far granted QoS 2 for both event and property subscriptions for the current OAuth token/DID; the other tested brokers rejected the SUBACK.
 2. A read-only MIoT property brute-force scanner now covers arbitrary SIID/PIID ranges (including full 1..255 exhaustive mode). The current scan's successful reads match the published readable surface; `-4003` is treated as nonexistent, while `-4001`/`-4004` remain discovery candidates because event-backed properties return `-4004`.
 3. The cloud control UI now includes a manual direction command queue for `SIID 8 / PIID 1`, with editable raw values and per-command intervals; commands can be sent once, stepped one-by-one, or run explicitly as a queue. Nothing is sent automatically on page load.
-4. Cloud capture confirmed the live map stream: `SIID 7 / EIID 1 map-points` arrives during cleaning with PIID 1 strings that decode cleanly into repeated `(x, y, type)` integer triplets. `SIID 7 / EIID 2 redraw-map` precedes/reset a new stream. Observed values include 1, 2, 3, 4, and 5. Type 4 is now physically correlated with challenging / entanglement-risk terrain such as clothes, ropes, or large loose debris that the vacuum may traverse but can get stuck on; the other type semantics remain unresolved. The cloud control UI now renders these triplets live while preserving the raw payloads.
-5. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
-6. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
-7. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
-8. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
-9. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
-10. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
+4. MQTT reconnects now restore the exact previously authorized topic/QoS subscriptions; earlier code reconnected the socket without re-subscribing. Browser-aborted UI polls are treated as benign and no longer print BrokenPipe tracebacks.
+5. Cloud capture confirmed the live map stream: `SIID 7 / EIID 1 map-points` arrives during cleaning with PIID 1 strings that decode cleanly into repeated `(x, y, type)` integer triplets. `SIID 7 / EIID 2 redraw-map` precedes/reset a new stream. Observed values include 1, 2, 3, 4, and 5. Type 4 is now physically correlated with challenging / entanglement-risk terrain such as clothes, ropes, or large loose debris that the vacuum may traverse but can get stuck on; the other type semantics remain unresolved. The cloud control UI now renders these triplets live while preserving the raw payloads.
+6. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
+7. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
+8. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
+9. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
+10. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
+11. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
 
 ## Constraints
 
