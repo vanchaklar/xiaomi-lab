@@ -12,14 +12,20 @@ the authorized cloud event subscription first and then exposes a browser UI with
 
 ## Run
 
-With the current experiment, the i2 broker is the only one that has granted the
-event subscription while the cached OAuth token was issued in the US region:
+The UI now probes all Xiaomi MQTT regions by default:
 
 ```bash
-python experiments/cloud_event_control.py \
-  --region i2 \
-  --auth-region us
+python experiments/cloud_event_control.py
 ```
+
+If this is the first OAuth login, specify the account/API region explicitly:
+
+```bash
+python experiments/cloud_event_control.py --auth-region us --login
+```
+
+Each regional broker is tested independently. Wildcard topics are tried first;
+if rejected, the known exact event topics are tried at QoS 2, 1, and 0.
 
 Then open:
 
@@ -32,7 +38,7 @@ on the same phone.
 If the cached OAuth file already records the correct auth region, this is enough:
 
 ```bash
-python experiments/cloud_event_control.py --region i2
+python experiments/cloud_event_control.py
 ```
 
 ## Automatically begin the experiment
