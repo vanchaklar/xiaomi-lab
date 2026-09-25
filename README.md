@@ -90,3 +90,16 @@ python experiments/lan_event_listener.py --duration 60
 ```
 
 See `docs/experiments/lan-events.md`.
+
+
+## MIoT brute-force property scan
+
+A read-only scanner can enumerate SIID/PIID property addresses beyond the
+published model specification:
+
+```bash
+python experiments/miot_bruteforce.py
+```
+
+Use `--exhaustive` for SIID/PIID 1..255. The scanner does not invoke actions.
+See `docs/experiments/miot-bruteforce.md`.
