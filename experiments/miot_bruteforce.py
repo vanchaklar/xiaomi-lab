@@ -220,6 +220,7 @@ def main() -> None:
 
     code_counts = Counter()
     successes = []
+    candidates = []
     unusual = []
     transport_errors = 0
     completed = 0
@@ -250,7 +251,15 @@ def main() -> None:
                 code_counts[str(code)] += 1
                 if code == 0:
                     successes.append((siid, piid, value))
-                elif code not in (-4001, -4004, None):
+                elif code in (-4001, -4004):
+                    # -4001 means the property exists but is not readable.
+                    # -4004 is generic internal error; on this vacuum the three
+                    # published event-backing properties return it, so keep it
+                    # visible as a discovery candidate rather than treating it
+                    # like an absent address.
+                    candidates.append((siid, piid, code, raw))
+                elif code not in (-4003, None):
+                    # -4003 is the normal nonexistent property/action/event code.
                     unusual.append((siid, piid, code, raw))
 
                 writer.writerow(
@@ -277,7 +286,9 @@ def main() -> None:
                         )
                 elif code == 0:
                     print(f"FOUND {siid}/{piid} = {value!r}")
-                elif code not in (-4001, -4004, None):
+                elif code in (-4001, -4004):
+                    print(f"CANDIDATE {siid}/{piid} code={code} raw={raw!r}")
+                elif code not in (-4003, None):
                     print(f"UNUSUAL {siid}/{piid} code={code} raw={raw!r}")
 
                 completed += 1
@@ -303,6 +314,7 @@ def main() -> None:
     print("\nsummary")
     print(f"elapsed_s={elapsed:.2f}")
     print(f"successful_properties={len(successes)}")
+    print(f"candidate_properties={len(candidates)}")
     print(f"unusual_nonzero_responses={len(unusual)}")
     print(f"transport_errors={transport_errors}")
     print("codes=" + json.dumps(dict(sorted(code_counts.items()))))
@@ -312,6 +324,11 @@ def main() -> None:
         print("\nsuccesses:")
         for siid, piid, value in successes:
             print(f"  {siid}/{piid} = {value!r}")
+
+    if candidates:
+        print("\ncandidates (-4001/-4004):")
+        for siid, piid, code, raw in candidates:
+            print(f"  {siid}/{piid} code={code} raw={raw!r}")
 
     if unusual:
         print("\nunusual responses:")
