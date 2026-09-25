@@ -692,10 +692,11 @@ def main() -> None:
                 did = str(exact[0]["did"])
                 print(f"did_source=cloud_exact did={did}")
             elif len(model_matches) == 1:
-                did = str(model_matches[0]["did"])
+                cloud_did = str(model_matches[0]["did"])
                 print(
-                    f"did_source=cloud_model_match did={did} "
-                    f"local_did={local_did}"
+                    f"cloud_model_match_candidate={cloud_did} "
+                    f"local_did={local_did}; keeping local DID because it "
+                    "previously received authorized MQTT subscriptions"
                 )
             elif model_matches:
                 print(
