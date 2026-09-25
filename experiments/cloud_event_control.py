@@ -55,6 +55,10 @@ button { font-size:18px; padding:14px 18px; margin:6px; border-radius:10px; bord
 .bad { color:#f88; }
 .good { color:#8f8; }
 small { color:#bbb; }
+input, select { font-size:16px; padding:8px; margin:4px; background:#222; color:#eee; border:1px solid #555; border-radius:6px; }
+table { width:100%; border-collapse:collapse; }
+th, td { padding:6px; border-bottom:1px solid #333; text-align:left; }
+.mono { font-family:monospace; }
 </style>
 </head>
 <body>
@@ -80,6 +84,38 @@ small { color:#bbb; }
 </div>
 
 <div class="card">
+  <h3>Manual direction commands</h3>
+  <div>
+    <label>Value
+      <input id="rawvalue" type="number" min="0" max="255" step="1" value="4">
+    </label>
+    <label>Interval after command (ms)
+      <input id="rawinterval" type="number" min="0" max="60000" step="10" value="250">
+    </label>
+    <button id="sendraw">SEND ONCE</button>
+    <button id="addraw">ADD TO QUEUE</button>
+  </div>
+  <small>
+    Known SIID 8 / PIID 1 values: 0=left, 1=right, 2=forward, 3=backward, 4=stop.
+    Other values are sent literally and may be rejected by the vacuum.
+  </small>
+
+  <div style="margin-top:10px">
+    <button id="nextcmd">SEND NEXT</button>
+    <button id="runcmds">RUN QUEUE</button>
+    <button id="stopcmds">STOP QUEUE + SEND STOP</button>
+    <button id="clearcmds">CLEAR</button>
+  </div>
+
+  <table>
+    <thead><tr><th>#</th><th>value</th><th>interval ms</th><th></th></tr></thead>
+    <tbody id="cmdrows"></tbody>
+  </table>
+  <div>Queue cursor: <span id="cmdcursor">0</span> / <span id="cmdcount">0</span></div>
+  <div id="cmdresult" class="mono"></div>
+</div>
+
+<div class="card">
   <div>Decoded map triples: <span id="mapcount">0</span> &nbsp; generation: <span id="generation">0</span></div>
   <label><input id="flipy" type="checkbox" checked> flip Y for display</label>
   <canvas id="map"></canvas>
@@ -93,6 +129,9 @@ small { color:#bbb; }
 
 <script>
 let lastSeq = 0;
+let commandQueue = [];
+let commandCursor = 0;
+let queueRunning = false;
 const el = id => document.getElementById(id);
 
 async function getJSON(path) {
@@ -104,6 +143,113 @@ async function post(path) {
   const r = await fetch(path, {method:"POST"});
   return await r.json();
 }
+
+async function postJSON(path, body) {
+  const r = await fetch(path, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)
+  });
+  return await r.json();
+}
+
+function renderQueue() {
+  const body = el("cmdrows");
+  body.innerHTML = "";
+  commandQueue.forEach((cmd, index) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + (index + 1) + (index === commandCursor ? " ▶" : "") + "</td>" +
+      "<td><input data-field='value' data-index='" + index + "' type='number' min='0' max='255' step='1' value='" + cmd.value + "' style='width:80px'></td>" +
+      "<td><input data-field='interval' data-index='" + index + "' type='number' min='0' max='60000' step='10' value='" + cmd.interval_ms + "' style='width:110px'></td>" +
+      "<td><button data-delete='" + index + "'>×</button></td>";
+    body.appendChild(tr);
+  });
+
+  body.querySelectorAll("input[data-field]").forEach(input => {
+    input.onchange = () => {
+      const index = Number(input.dataset.index);
+      const field = input.dataset.field;
+      let value = Number(input.value);
+      if (!Number.isFinite(value)) value = 0;
+      if (field === "value") commandQueue[index].value = Math.trunc(value);
+      if (field === "interval") commandQueue[index].interval_ms = Math.max(0, Math.trunc(value));
+      renderQueue();
+    };
+  });
+
+  body.querySelectorAll("button[data-delete]").forEach(button => {
+    button.onclick = () => {
+      const index = Number(button.dataset.delete);
+      commandQueue.splice(index, 1);
+      if (commandCursor > index) commandCursor--;
+      if (commandCursor > commandQueue.length) commandCursor = commandQueue.length;
+      renderQueue();
+    };
+  });
+
+  el("cmdcursor").textContent = commandCursor;
+  el("cmdcount").textContent = commandQueue.length;
+}
+
+async function sendRawValue(value, source="manual") {
+  const result = await postJSON("/api/raw-direction", {value, source});
+  el("cmdresult").className = result.ok ? "mono good" : "mono bad";
+  el("cmdresult").textContent =
+    new Date().toLocaleTimeString() + " value=" + value + " -> " + JSON.stringify(result);
+  return result;
+}
+
+async function sendNextCommand() {
+  if (commandCursor >= commandQueue.length) return null;
+  const cmd = commandQueue[commandCursor];
+  const result = await sendRawValue(cmd.value, "queue");
+  commandCursor++;
+  renderQueue();
+  return {cmd, result};
+}
+
+async function runQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  try {
+    while (queueRunning && commandCursor < commandQueue.length) {
+      const sent = await sendNextCommand();
+      if (!sent) break;
+      if (!sent.result.ok) break;
+      if (sent.cmd.interval_ms > 0) {
+        await new Promise(resolve => setTimeout(resolve, sent.cmd.interval_ms));
+      }
+    }
+  } finally {
+    queueRunning = false;
+  }
+}
+
+el("sendraw").onclick = async () => {
+  await sendRawValue(Math.trunc(Number(el("rawvalue").value)), "manual");
+};
+
+el("addraw").onclick = () => {
+  commandQueue.push({
+    value: Math.trunc(Number(el("rawvalue").value)),
+    interval_ms: Math.max(0, Math.trunc(Number(el("rawinterval").value)))
+  });
+  renderQueue();
+};
+
+el("nextcmd").onclick = sendNextCommand;
+el("runcmds").onclick = runQueue;
+el("stopcmds").onclick = async () => {
+  queueRunning = false;
+  await sendRawValue(4, "queue-stop");
+};
+el("clearcmds").onclick = () => {
+  queueRunning = false;
+  commandQueue = [];
+  commandCursor = 0;
+  renderQueue();
+};
 
 async function refreshState() {
   try {
@@ -231,6 +377,7 @@ setInterval(refreshEvents, 500);
 setInterval(refreshMap, 350);
 el("flipy").onchange = refreshMap;
 window.addEventListener("resize", refreshMap);
+renderQueue();
 refreshState();
 refreshEvents();
 refreshMap();
@@ -258,6 +405,8 @@ class ExperimentController:
         self.map_generation = 0
         self.map_cells: dict[tuple[int, int], int] = {}
         self.map_triplet_count = 0
+        self.command_seq = 0
+        self.command_log = deque(maxlen=200)
 
     @property
     def regions(self) -> list[str]:
@@ -353,6 +502,33 @@ class ExperimentController:
             self.last_action = "dock"
             return response
 
+    def raw_direction(self, value: int, source: str = "manual"):
+        if not isinstance(value, int):
+            raise ValueError("direction value must be an integer")
+        if value < 0 or value > 255:
+            raise ValueError("direction value must be between 0 and 255")
+
+        with self.action_lock:
+            payload = [{
+                "did": f"cloud-ui-dir-{value}",
+                "siid": 8,
+                "piid": 1,
+                "value": value,
+            }]
+            response = self.vac.raw_command("set_properties", payload)
+            self.command_seq += 1
+            self.last_action = f"direction:{value}"
+            self.command_log.append({
+                "seq": self.command_seq,
+                "timestamp": time.time(),
+                "source": source,
+                "siid": 8,
+                "piid": 1,
+                "value": value,
+                "response": response,
+            })
+            return response
+
     def read_property(self, siid: int, piid: int):
         try:
             return self.vac.get_property_by(siid, piid)
@@ -374,6 +550,7 @@ class ExperimentController:
             "state": self.read_property(2, 1),
             "battery": self.read_property(3, 1),
             "last_action": self.last_action,
+            "last_raw_command": self.command_log[-1] if self.command_log else None,
         }
 
     def events_payload(self, since: int):
@@ -487,8 +664,34 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if not length:
+            return {}
+        return json.loads(self.rfile.read(length))
+
     def do_POST(self):
         try:
+            if self.path == "/api/raw-direction":
+                payload = self._read_json()
+                value = payload.get("value")
+                if isinstance(value, bool):
+                    raise ValueError("direction value must be an integer")
+                try:
+                    value = int(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("direction value must be an integer") from exc
+                source = str(payload.get("source") or "manual")
+                response = self.controller.raw_direction(value, source)
+                self._json(200, {
+                    "ok": True,
+                    "siid": 8,
+                    "piid": 1,
+                    "value": value,
+                    "response": response,
+                })
+                return
+
             if self.path == "/api/start":
                 response = self.controller.start_cleaning()
                 self._json(200, {"ok": True, "action": "start", "response": response})
