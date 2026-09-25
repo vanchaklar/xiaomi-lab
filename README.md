@@ -127,7 +127,7 @@ The cloud event probe has a local browser UI that can start/stop cleaning,
 send the vacuum home, and show incoming cloud events live:
 
 ```bash
-python experiments/cloud_event_control.py --region i2
+python experiments/cloud_event_control.py
 ```
 
 Then open `http://127.0.0.1:8768/`. Use `--auto-start` to begin cleaning
