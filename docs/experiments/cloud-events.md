@@ -71,12 +71,26 @@ python experiments/cloud_event_listener.py --region de --duration 60
 
 Then start a cleaning run in Xiaomi Home.
 
-The listener subscribes to:
+The listener now first asks the broker for the complete device subtree:
+
+```text
+device/<did>/#
+```
+
+If the broker authorizes it, this captures all channels published under the
+vacuum DID, including undocumented or legacy topic families.
+
+If the full-device wildcard is rejected, the listener falls back to every
+device channel family exposed by Xiaomi's current cloud client:
 
 ```text
 device/<did>/up/event_occured/#
 device/<did>/up/properties_changed/#
+device/<did>/state/#
 ```
+
+If the event wildcard is rejected, the known exact vacuum events are then tried
+at QoS 2, 1, and 0.
 
 The DID defaults to the numeric local miIO device ID. Override it only if the
 cloud account uses a different DID:
@@ -177,3 +191,15 @@ python experiments/cloud_event_listener.py \
   --auth-region us \
   --duration 120
 ```
+
+
+## Fan-speed implication
+
+A successful `properties_changed/#` subscription already covers
+`SIID 2 / PIID 6` fan speed. Therefore a run that captures other property
+notifications but contains no `2/6` message did not miss it because of a
+property-topic filter.
+
+The new `device/<did>/#` probe is broader: if authorized, it also lets us see
+whether this older vacuum publishes the carpet/fan transition through an
+undocumented topic family rather than `properties_changed`.
