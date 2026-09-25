@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """Listen for MIoT LAN push events from mijia.vacuum.v2.
 
-This uses Xiaomi's wildcard LAN subscription flow:
-- send an MDID probe from one persistent UDP socket;
-- require the device to advertise MSUB/PUB wildcard subscription support;
-- send miIO.sub version 2.0 from that same socket;
-- decrypt and record properties_changed / event_occured uplinks;
-- ACK each device-initiated message;
-- send miIO.unsub on clean shutdown.
+The listener keeps one UDP socket open, probes the vacuum's LAN subscription
+capability, optionally negotiates miIO.sub, decrypts device-initiated uplinks,
+ACKs them, and logs event_occured / properties_changed payloads.
 
-It does not modify vacuum settings or start movement.
+It does not modify cleaning settings or start movement.
 """
 
 from __future__ import annotations
@@ -135,11 +131,7 @@ def build_packet(
 
 def build_probe(virtual_did: int) -> bytes:
     packet = bytearray(32)
-    packet[:20] = (
-        b"!1\x00\x20"
-        + b"\xff" * 12
-        + b"MDID"
-    )
+    packet[:20] = b"!1\x00\x20" + b"\xff" * 12 + b"MDID"
     packet[20:28] = struct.pack(">Q", virtual_did)
     packet[28:32] = b"\x00\x00\x00\x00"
     return bytes(packet)
@@ -162,10 +154,10 @@ def parse_probe(packet: bytes) -> dict:
     )
     sub_ts = struct.unpack(">I", packet[20:24])[0] if advertises_sub else None
     sub_type = packet[27] if advertises_sub else None
+    capability_byte = packet[28] if advertises_sub else None
     wildcard = (
         advertises_sub
-        and len(packet) >= 29
-        and packet[28] == OT_SUPPORT_WILDCARD_SUB
+        and capability_byte == OT_SUPPORT_WILDCARD_SUB
     )
 
     return {
@@ -174,6 +166,7 @@ def parse_probe(packet: bytes) -> dict:
         "advertises_sub": advertises_sub,
         "sub_ts": sub_ts,
         "sub_type": sub_type,
+        "capability_byte": capability_byte,
         "wildcard": wildcard,
         "raw_hex": packet.hex(),
     }
@@ -189,12 +182,14 @@ class Listener:
         virtual_did: int | None = None,
         timeout: float = 1.0,
         probe_interval: float = 10.0,
+        sub_method: str = ".",
     ):
         self.ip = ip
         self.token = bytes.fromhex(token_hex)
         self.virtual_did = virtual_did or secrets.randbits(64) or 1
         self.timeout = timeout
         self.probe_interval = probe_interval
+        self.sub_method = sub_method
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", 0))
@@ -215,11 +210,6 @@ class Listener:
         self.writer = csv.DictWriter(self.handle, fieldnames=CSV_FIELDS)
         self.writer.writeheader()
         self.handle.flush()
-
-    @property
-    def local_endpoint(self) -> tuple[str, int]:
-        host, port = self.sock.getsockname()
-        return host, port
 
     def next_id(self) -> int:
         self.msg_id += 1
@@ -280,20 +270,19 @@ class Listener:
                 "version": "2.0",
                 "did": str(self.virtual_did),
                 "update_ts": self.sub_ts,
-                "sub_method": ".",
+                "sub_method": self.sub_method,
             },
         }
         self.send_message(request)
 
         response = self.wait_for_id(msg_id, 5.0)
         result = response.get("result")
-        ok = (
-            isinstance(result, dict)
-            and result.get("code") == 0
-        )
+        ok = isinstance(result, dict) and result.get("code") == 0
         self.subscribed = ok
         if not ok:
-            raise RuntimeError(f"miIO.sub rejected: {response!r}")
+            raise RuntimeError(
+                f"miIO.sub rejected for sub_method={self.sub_method!r}: {response!r}"
+            )
         return response
 
     def unsubscribe(self) -> None:
@@ -309,7 +298,7 @@ class Listener:
                 "version": "2.0",
                 "did": str(self.virtual_did),
                 "update_ts": self.sub_ts or 0,
-                "sub_method": ".",
+                "sub_method": self.sub_method,
             },
         }
         try:
@@ -499,17 +488,27 @@ def main() -> None:
         help="CSV path; defaults to data/lan_events_<timestamp>.csv",
     )
     parser.add_argument(
+        "--sub-method",
+        default=".",
+        help=(
+            "miIO.sub method filter. '.' is Xiaomi's wildcard form; for older "
+            "non-wildcard devices test 'event_occured' or 'properties_changed'"
+        ),
+    )
+    parser.add_argument(
         "--allow-no-wildcard",
         action="store_true",
         help=(
-            "attempt miIO.sub even if the probe does not advertise wildcard "
-            "subscription support"
+            "allow sub_method='.' even when the probe does not advertise "
+            "wildcard support; explicit --sub-method values do not need this flag"
         ),
     )
     args = parser.parse_args()
 
     if args.duration is not None and args.duration <= 0:
         parser.error("--duration must be positive")
+    if not args.sub_method:
+        parser.error("--sub-method cannot be empty")
 
     vac = connect()
     info = vac.info()
@@ -519,7 +518,7 @@ def main() -> None:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = args.output or (REPO_ROOT / "data" / f"lan_events_{stamp}.csv")
 
-    listener = Listener(ip, token, output)
+    listener = Listener(ip, token, output, sub_method=args.sub_method)
 
     def request_stop(_signum=None, _frame=None):
         listener.stop_requested = True
@@ -530,6 +529,7 @@ def main() -> None:
     print(f"device={info.model} firmware={info.firmware_version}")
     print(f"local_udp_port={listener.sock.getsockname()[1]}")
     print(f"virtual_did={listener.virtual_did}")
+    print(f"sub_method={args.sub_method!r}")
     print("probing MIoT LAN push capability...")
 
     try:
@@ -541,23 +541,27 @@ def main() -> None:
                     "did": probe["did"],
                     "advertises_sub": probe["advertises_sub"],
                     "sub_type": probe["sub_type"],
+                    "capability_byte": probe["capability_byte"],
                     "wildcard": probe["wildcard"],
                 },
                 separators=(",", ":"),
             )
         )
 
-        if not probe["wildcard"] and not args.allow_no_wildcard:
+        if (
+            args.sub_method == "."
+            and not probe["wildcard"]
+            and not args.allow_no_wildcard
+        ):
             raise RuntimeError(
-                "device did not advertise wildcard MIoT LAN subscription; "
-                "re-run with --allow-no-wildcard only if you want to test "
-                "miIO.sub anyway"
+                "device advertises subscriptions but not wildcard sub_method='.'; "
+                "try --sub-method event_occured"
             )
 
         response = listener.subscribe()
         print("subscribe_response=" + json.dumps(response, separators=(",", ":")))
         print(f"csv={output}")
-        print("listening for properties_changed and event_occured; Ctrl-C to stop")
+        print("listening for device uplinks; Ctrl-C to stop")
 
         listener.run(args.duration)
     finally:
