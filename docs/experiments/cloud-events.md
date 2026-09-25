@@ -143,3 +143,37 @@ python experiments/cloud_event_listener.py --region all --duration 120
 ```
 
 Each connected region gets its own CSV file.
+
+
+## Observed broker authorization
+
+With the current OAuth token and vacuum DID, MQTT TCP/TLS connection succeeds
+against all tested Xiaomi regional brokers, but the SUBACK result is what
+determines whether the topic is actually authorized.
+
+Observed results:
+
+```text
+cn  event/property subscription: rejected (unspecified error)
+de  event/property subscription: rejected (unspecified error)
+i2  event/property subscription: Granted QoS 2
+ru  event/property subscription: rejected (unspecified error)
+sg  event/property subscription: rejected (unspecified error)
+us  event/property subscription: Not authorized
+```
+
+Therefore `i2-ha.mqtt.io.mi.com` is currently the only verified broker for
+this token/DID/topic combination.
+
+The listener now waits for SUBACK and treats rejected subscriptions as failed
+regions. It also verifies the cloud device list and prefers the cloud DID for
+`mijia.vacuum.v2` when it can resolve one unambiguously.
+
+A focused capture can use the US OAuth token against the i2 broker:
+
+```bash
+python experiments/cloud_event_listener.py \
+  --region i2 \
+  --auth-region us \
+  --duration 120
+```
