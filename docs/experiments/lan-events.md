@@ -78,3 +78,47 @@ It does create a temporary LAN push subscription and removes it on clean shutdow
 
 Use Ctrl-C rather than killing the process when possible so `miIO.unsub` can be
 sent.
+
+
+## Firmware 2.2.1 subscription result
+
+Observed probe:
+
+```text
+advertises_sub=true
+sub_type=1
+wildcard=false
+```
+
+Forcing the wildcard request:
+
+```text
+miIO.sub
+sub_method="."
+```
+
+returned:
+
+```text
+result.code = -10
+```
+
+This establishes that the device advertises a subscription mechanism but rejects
+Xiaomi's newer wildcard form. The exact generic meaning of `-10` is not being
+assumed here; in this experiment it is the response to the unsupported wildcard
+request.
+
+The next narrow probe is an explicit method subscription:
+
+```bash
+python experiments/lan_event_listener.py --sub-method event_occured --duration 60
+```
+
+If that is rejected too, try the property channel independently:
+
+```bash
+python experiments/lan_event_listener.py --sub-method properties_changed --duration 60
+```
+
+An explicit method does not require `--allow-no-wildcard`. The script also now
+prints the raw subscription capability byte from the MDID response.
