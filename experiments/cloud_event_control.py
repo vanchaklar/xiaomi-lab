@@ -133,6 +133,7 @@ th, td { padding:6px; border-bottom:1px solid #333; text-align:left; }
 <div class="card">
   <div>Decoded map triples: <span id="mapcount">0</span> &nbsp; generation: <span id="generation">0</span></div>
   <label><input id="flipy" type="checkbox" checked> flip Y for display</label>
+  <label><input id="challengeoverlay" type="checkbox" checked> preserve type-4 challenge overlay</label>
   <canvas id="map"></canvas>
   <div id="legend">waiting for 7/1 map_points...</div>
 </div>
@@ -351,6 +352,18 @@ async function refreshMap() {
       ctx.fillRect(x, y, s, s);
     }
 
+    if (el("challengeoverlay").checked) {
+      for (const p of data.challenge_cells) {
+        const x = ox + (p.x - minX) * scale;
+        const yIndex = flipY ? (maxY - p.y) : (p.y - minY);
+        const y = oy + yIndex * scale;
+        const s = Math.max(3, Math.min(9, scale));
+        ctx.strokeStyle = typeColor(4);
+        ctx.lineWidth = Math.max(1, Math.min(3, 1 + Math.log2(1 + p.hits) / 2));
+        ctx.strokeRect(x - 1, y - 1, s + 2, s + 2);
+      }
+    }
+
     const legendParts = Object.entries(data.type_counts)
       .sort((a,b) => Number(a[0]) - Number(b[0]))
       .map(([type,count]) =>
@@ -359,7 +372,8 @@ async function refreshMap() {
     el("legend").textContent =
       "bounds x=" + minX + ".." + maxX +
       " y=" + minY + ".." + maxY +
-      " | " + legendParts.join(" | ");
+      " | " + legendParts.join(" | ") +
+      " | challenge cells ever seen: " + data.challenge_cells.length;
   } catch (e) {
     el("legend").textContent = "map error: " + e;
   }
@@ -403,6 +417,7 @@ setInterval(refreshState, 1200);
 setInterval(refreshEvents, 500);
 setInterval(refreshMap, 350);
 el("flipy").onchange = refreshMap;
+el("challengeoverlay").onchange = refreshMap;
 window.addEventListener("resize", refreshMap);
 renderQueue();
 refreshState();
@@ -431,6 +446,8 @@ class ExperimentController:
         self.map_lock = threading.Lock()
         self.map_generation = 0
         self.map_cells: dict[tuple[int, int], int] = {}
+        self.map_layers: dict[int, set[tuple[int, int]]] = {}
+        self.map_hits: dict[tuple[int, int, int], int] = {}
         self.map_triplet_count = 0
         self.command_seq = 0
         self.command_log = deque(maxlen=200)
@@ -482,6 +499,8 @@ class ExperimentController:
             with self.map_lock:
                 self.map_generation += 1
                 self.map_cells.clear()
+                self.map_layers.clear()
+                self.map_hits.clear()
                 self.map_triplet_count = 0
 
         if event.get("kind") == "event_occured" and siid == 7 and iid == 1:
@@ -491,6 +510,9 @@ class ExperimentController:
                     self.map_triplet_count += len(points)
                     for x, y, point_type in points:
                         self.map_cells[(x, y)] = point_type
+                        self.map_layers.setdefault(point_type, set()).add((x, y))
+                        hit_key = (x, y, point_type)
+                        self.map_hits[hit_key] = self.map_hits.get(hit_key, 0) + 1
 
         with self.event_lock:
             self.seq += 1
@@ -618,12 +640,27 @@ class ExperimentController:
                 key = str(point["type"])
                 type_counts[key] = type_counts.get(key, 0) + 1
 
+            challenge_cells = [
+                {
+                    "x": x,
+                    "y": y,
+                    "hits": self.map_hits.get((x, y, 4), 0),
+                }
+                for x, y in sorted(self.map_layers.get(4, set()))
+            ]
+            layer_counts = {
+                str(point_type): len(cells)
+                for point_type, cells in self.map_layers.items()
+            }
+
             return {
                 "generation": self.map_generation,
                 "triplet_count": self.map_triplet_count,
                 "point_count": len(points),
                 "bounds": bounds,
                 "type_counts": type_counts,
+                "layer_counts": layer_counts,
+                "challenge_cells": challenge_cells,
                 "points": points,
             }
 
