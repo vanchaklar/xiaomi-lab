@@ -46,6 +46,7 @@ MQTT_HOST = "ha.mqtt.io.mi.com"
 MQTT_PORT = 8883
 
 REGIONS = ("cn", "de", "i2", "ru", "sg", "us")
+REGION_CHOICES = (*REGIONS, "all")
 
 AUTH_PATH = REPO_ROOT / "data" / "xiaomi_cloud_auth.json"
 
@@ -452,8 +453,17 @@ def main() -> None:
     parser.add_argument(
         "--region",
         default=os.environ.get("XIAOMI_CLOUD_REGION"),
+        choices=REGION_CHOICES,
+        help="Mi Home region: cn/de/i2/ru/sg/us, or all to probe every broker",
+    )
+    parser.add_argument(
+        "--auth-region",
+        default=os.environ.get("XIAOMI_CLOUD_AUTH_REGION"),
         choices=REGIONS,
-        help="Mi Home account region: cn/de/i2/ru/sg/us",
+        help=(
+            "OAuth region when --region all is used. On later runs this can be "
+            "omitted if data/xiaomi_cloud_auth.json already identifies the region."
+        ),
     )
     parser.add_argument(
         "--duration",
@@ -488,14 +498,37 @@ def main() -> None:
     if not args.region:
         parser.error(
             "--region is required unless XIAOMI_CLOUD_REGION is set "
-            "(cn/de/i2/ru/sg/us)"
+            "(cn/de/i2/ru/sg/us/all)"
         )
     if args.duration < 0:
         parser.error("--duration must be >= 0")
 
-    auth = get_auth(args.region, force_login=args.login)
+    cached_auth = None
+    if AUTH_PATH.exists():
+        try:
+            cached_auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cached_auth = None
+
+    if args.region == "all":
+        auth_region = args.auth_region
+        if not auth_region and isinstance(cached_auth, dict):
+            cached_region = cached_auth.get("region")
+            if cached_region in REGIONS:
+                auth_region = cached_region
+        if not auth_region:
+            parser.error(
+                "--region all needs --auth-region on the first login, for example "
+                "--region all --auth-region de --login"
+            )
+        mqtt_regions = list(REGIONS)
+    else:
+        auth_region = args.region
+        mqtt_regions = [args.region]
+
+    auth = get_auth(auth_region, force_login=args.login)
     print(
-        f"cloud_auth=ok region={args.region} "
+        f"cloud_auth=ok auth_region={auth_region} "
         f"cached={AUTH_PATH.exists() and not bool(os.environ.get('XIAOMI_CLOUD_ACCESS_TOKEN'))}"
     )
 
@@ -507,25 +540,56 @@ def main() -> None:
     did = args.did or str(vac.device_id)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = args.output or (
-        REPO_ROOT / "data" / f"cloud_events_{stamp}.csv"
-    )
+    base_output = args.output
 
     print(f"device={info['model']} firmware={info['firmware_version']}")
     print(f"did={did}")
-    print(f"csv={output}")
 
-    listener = CloudListener(
-        region=args.region,
-        run_uuid=auth["uuid"],
-        access_token=auth["access_token"],
-        did=did,
-        output=output,
-        debug=args.debug,
-    )
+    def output_for_region(region: str) -> Path:
+        if base_output is None:
+            suffix = f"_{region}" if len(mqtt_regions) > 1 else ""
+            return REPO_ROOT / "data" / f"cloud_events_{stamp}{suffix}.csv"
+        if len(mqtt_regions) == 1:
+            return base_output
+        return base_output.with_name(
+            f"{base_output.stem}_{region}{base_output.suffix or '.csv'}"
+        )
+
+    listeners = []
+    failures = []
 
     try:
-        listener.start()
+        for region in mqtt_regions:
+            output = output_for_region(region)
+            print(f"\ntrying_region={region} csv={output}")
+            listener = CloudListener(
+                region=region,
+                run_uuid=auth["uuid"],
+                access_token=auth["access_token"],
+                did=did,
+                output=output,
+                debug=args.debug,
+            )
+            try:
+                listener.start()
+            except Exception as exc:
+                listener.stop()
+                failures.append((region, f"{type(exc).__name__}: {exc}"))
+                print(f"region_failed={region} error={type(exc).__name__}: {exc}")
+                continue
+            listeners.append(listener)
+
+        if not listeners:
+            detail = "; ".join(f"{region}: {error}" for region, error in failures)
+            raise RuntimeError(
+                "no Xiaomi MQTT region accepted the current OAuth token"
+                + (f": {detail}" if detail else "")
+            )
+
+        print(
+            "connected_regions="
+            + ",".join(listener.region for listener in listeners)
+        )
         print(
             "listening for cloud event_occured/properties_changed; "
             "start a cleaning run now"
@@ -537,11 +601,12 @@ def main() -> None:
         else:
             deadline = time.monotonic() + args.duration
             while time.monotonic() < deadline:
-                time.sleep(min(1, deadline - time.monotonic()))
+                time.sleep(min(1, max(0, deadline - time.monotonic())))
     except KeyboardInterrupt:
         pass
     finally:
-        listener.stop()
+        for listener in listeners:
+            listener.stop()
 
 
 if __name__ == "__main__":
