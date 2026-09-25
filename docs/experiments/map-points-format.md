@@ -34,11 +34,16 @@ becomes:
 ```
 
 The first two fields behave like map-grid coordinates. The third field behaves
-like a point/category code. Captured values so far include 1, 2, 3, and 5.
+like a point/category code. Captured values so far include 1, 2, 3, 4, and 5.
 
-Do not assign semantic names to those type codes yet. We have not established
-whether they represent cleaned floor, obstacles, trajectory, robot pose, dock,
-or another map-layer concept.
+One semantic is now physically correlated:
+
+- **type 4**: challenging / entanglement-risk terrain. These are areas containing
+  things the vacuum can sometimes run over but may get stuck on, such as clothes,
+  ropes, or large loose debris/junk.
+
+The meanings of types 1, 2, 3, and 5 are still not established and should remain
+numeric until controlled experiments identify them.
 
 ## Redraw behavior
 
