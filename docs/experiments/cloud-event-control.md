@@ -55,3 +55,15 @@ cleaning mode, it sends STOP. If the user has already pressed STOP or DOCK, the
 shutdown path does not override that state.
 
 Events are written under `data/cloud_ui_*.csv`.
+
+
+## Cloud subscription failure
+
+The control UI does not exit if the MQTT event subscription is rejected. It
+still starts the local web interface so START/STOP/DOCK remain available, and
+the page shows the broker error under **Cloud errors**.
+
+The DID resolver now keeps the proven local miIO DID unless the cloud device
+list contains an exact DID match. A sole model-name match is shown as a
+candidate but is not substituted automatically, because using a different DID
+can change MQTT topic authorization.
