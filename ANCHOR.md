@@ -29,13 +29,14 @@ Prefer observation and reversible experiments before firmware changes:
 3. The cloud control UI now includes a manual direction command queue for `SIID 8 / PIID 1`, with editable raw values and per-command intervals; commands can be sent once, stepped one-by-one, or run explicitly as a queue. Nothing is sent automatically on page load.
 4. MQTT reconnects now restore the exact previously authorized topic/QoS subscriptions; earlier code reconnected the socket without re-subscribing. Browser-aborted UI polls are treated as benign and no longer print BrokenPipe tracebacks.
 5. Longer captures confirm that the same coordinate can receive multiple map types over time, so the type field is an update/layer signal rather than a permanently immutable cell class. The UI now preserves type-4 challenge observations as an overlay and counts repeated hits per coordinate.
-6. Cloud capture confirmed the live map stream: `SIID 7 / EIID 1 map-points` arrives during cleaning with PIID 1 strings that decode cleanly into repeated `(x, y, type)` integer triplets. `SIID 7 / EIID 2 redraw-map` precedes/reset a new stream. Observed values include 1, 2, 3, 4, and 5. Type 4 is now physically correlated with challenging / entanglement-risk terrain such as clothes, ropes, or large loose debris that the vacuum may traverse but can get stuck on; the other type semantics remain unresolved. The cloud control UI now renders these triplets live while preserving the raw payloads.
-7. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
-8. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
-9. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
-10. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
-11. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
-12. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
+6. A `current-clean-record` payload `1 254 4 3` was emitted while `9/1 clean_area=254` and `9/2 clean_time=3`, strongly identifying record field 2 as clean area and field 4 as clean time; fields 1 and 3 remain unresolved.
+7. Cloud capture confirmed the live map stream: `SIID 7 / EIID 1 map-points` arrives during cleaning with PIID 1 strings that decode cleanly into repeated `(x, y, type)` integer triplets. `SIID 7 / EIID 2 redraw-map` precedes/reset a new stream. Observed values include 1, 2, 3, 4, and 5. Type 4 is now physically correlated with challenging / entanglement-risk terrain such as clothes, ropes, or large loose debris that the vacuum may traverse but can get stuck on; the other type semantics remain unresolved. The cloud control UI now renders these triplets live while preserving the raw payloads.
+8. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
+9. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
+10. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
+11. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
+12. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
+13. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
 
 ## Constraints
 
