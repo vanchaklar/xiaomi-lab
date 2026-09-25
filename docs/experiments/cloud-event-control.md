@@ -73,3 +73,35 @@ The DID resolver now keeps the proven local miIO DID unless the cloud device
 list contains an exact DID match. A sole model-name match is shown as a
 candidate but is not substituted automatically, because using a different DID
 can change MQTT topic authorization.
+
+
+## Manual direction command queue
+
+The browser UI can send the raw direction-key property one command at a time.
+
+Known values:
+
+```text
+SIID 8 / PIID 1
+0 = left
+1 = right
+2 = forward
+3 = backward
+4 = stop
+```
+
+The UI exposes:
+
+- **SEND ONCE**: immediately sends the current numeric value;
+- **ADD TO QUEUE**: appends the current value plus its editable post-command interval;
+- **SEND NEXT**: sends exactly one queued row and advances the cursor;
+- **RUN QUEUE**: sends queued rows in order, waiting each row's interval before the next;
+- **STOP QUEUE + SEND STOP**: stops queue playback and immediately sends value `4`;
+- **CLEAR**: clears the local browser queue.
+
+Every queued row remains editable for both `value` and `interval ms`. Values
+outside the known 0..4 set can still be entered deliberately; they are sent
+literally and may be rejected by the vacuum.
+
+The server keeps a short command log and reports each raw MIoT response in the
+UI. Nothing is sent automatically when the page loads.
