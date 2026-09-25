@@ -59,6 +59,13 @@ input, select { font-size:16px; padding:8px; margin:4px; background:#222; color:
 table { width:100%; border-collapse:collapse; }
 th, td { padding:6px; border-bottom:1px solid #333; text-align:left; }
 .mono { font-family:monospace; }
+.dpad { display:grid; grid-template-columns:repeat(3, minmax(72px, 110px)); gap:8px; justify-content:center; margin:12px 0; }
+.dpad button { margin:0; min-height:62px; font-size:22px; }
+.dpad .forward { grid-column:2; grid-row:1; }
+.dpad .left { grid-column:1; grid-row:2; }
+.dpad .stopdir { grid-column:2; grid-row:2; background:#e44; color:white; }
+.dpad .right { grid-column:3; grid-row:2; }
+.dpad .backward { grid-column:2; grid-row:3; }
 </style>
 </head>
 <body>
@@ -85,6 +92,14 @@ th, td { padding:6px; border-bottom:1px solid #333; text-align:left; }
 
 <div class="card">
   <h3>Manual direction commands</h3>
+  <div class="dpad">
+    <button class="forward dirbtn" data-value="2">▲</button>
+    <button class="left dirbtn" data-value="0">◀</button>
+    <button class="stopdir dirbtn" data-value="4">STOP</button>
+    <button class="right dirbtn" data-value="1">▶</button>
+    <button class="backward dirbtn" data-value="3">▼</button>
+  </div>
+  <small>Each direction button sends its raw SIID 8 / PIID 1 value immediately, once per tap.</small>
   <div>
     <label>Value
       <input id="rawvalue" type="number" min="0" max="255" step="1" value="4">
@@ -225,6 +240,13 @@ async function runQueue() {
     queueRunning = false;
   }
 }
+
+document.querySelectorAll(".dirbtn").forEach(button => {
+  button.onclick = async () => {
+    const value = Number(button.dataset.value);
+    await sendRawValue(value, "button");
+  };
+});
 
 el("sendraw").onclick = async () => {
   await sendRawValue(Math.trunc(Number(el("rawvalue").value)), "manual");
