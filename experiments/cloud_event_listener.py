@@ -353,6 +353,7 @@ class CloudListener:
         did: str,
         output: Path,
         debug: bool = False,
+        event_callback=None,
     ) -> None:
         self.region = region
         self.did = did
@@ -364,6 +365,7 @@ class CloudListener:
         self.subscription_mids: dict[int, str] = {}
         self.subscription_results: dict[str, tuple[bool, str]] = {}
         self.debug = debug
+        self.event_callback = event_callback
 
         output.parent.mkdir(parents=True, exist_ok=True)
         self.handle = output.open("w", newline="", encoding="utf-8")
@@ -495,6 +497,25 @@ class CloudListener:
 
         print(f"CLOUD {kind} {siid}/{iid} {name}: {compact}")
 
+        event_record = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "elapsed_s": f"{time.monotonic() - self.started:.6f}",
+            "topic": msg.topic,
+            "kind": kind,
+            "siid": siid,
+            "iid": iid,
+            "name": name,
+            "payload": payload,
+        }
+        if self.event_callback is not None:
+            try:
+                self.event_callback(self.region, event_record)
+            except Exception as exc:
+                print(
+                    f"event_callback_error={type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
         self.writer.writerow(
             {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -594,6 +615,14 @@ def main() -> None:
         type=Path,
         default=None,
         help="CSV path; defaults under data/",
+    )
+    parser.add_argument(
+        "--start-cleaning",
+        action="store_true",
+        help=(
+            "start cleaning after the cloud event subscription is confirmed; "
+            "the script sends stop when the capture ends"
+        ),
     )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
@@ -736,10 +765,17 @@ def main() -> None:
             "connected_regions="
             + ",".join(listener.region for listener in listeners)
         )
-        print(
-            "listening for cloud event_occured/properties_changed; "
-            "start a cleaning run now"
-        )
+
+        started_cleaning = False
+        if args.start_cleaning:
+            response = vac.start()
+            started_cleaning = True
+            print(f"cleaning_started response={response!r}")
+        else:
+            print(
+                "listening for cloud event_occured/properties_changed; "
+                "start a cleaning run now"
+            )
 
         if args.duration == 0:
             while True:
@@ -751,6 +787,15 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if "started_cleaning" in locals() and started_cleaning:
+            try:
+                response = vac.stop()
+                print(f"cleaning_stopped response={response!r}")
+            except Exception as exc:
+                print(
+                    f"cleaning_stop_failed={type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
         for listener in listeners:
             listener.stop()
 
