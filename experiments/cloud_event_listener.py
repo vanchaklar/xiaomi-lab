@@ -316,13 +316,19 @@ def get_auth(region: str, force_login: bool = False) -> dict:
 def decode_topic(topic: str) -> tuple[str, int | None, int | None, str]:
     parts = topic.split("/")
 
+    # Xiaomi's current cloud client exposes device state separately from the
+    # MIoT "up" property/event families.
+    if len(parts) >= 4 and parts[0] == "device" and parts[2] == "state":
+        suffix = "/".join(parts[3:]) or "state"
+        return "state", None, None, suffix
+
     try:
         up_index = parts.index("up")
     except ValueError:
-        return "unknown", None, None, "unknown"
+        return "unknown", None, None, topic
 
     if up_index + 1 >= len(parts):
-        return "unknown", None, None, "unknown"
+        return "unknown", None, None, topic
 
     kind = parts[up_index + 1]
 
@@ -610,33 +616,65 @@ class CloudListener:
             raise RuntimeError(self.failed_reason)
 
         attempts: list[tuple[str, dict[str, tuple[bool, str]]]] = []
+        authorized: list[tuple[str, int]] = []
+
+        def remember(results: dict[str, tuple[bool, str]], qos: int) -> None:
+            for topic, (ok, _reason) in results.items():
+                if ok and (topic, qos) not in authorized:
+                    authorized.append((topic, qos))
+
+        # First ask the broker for the whole device subtree. If authorized this
+        # captures every current and undocumented channel under this DID,
+        # including properties, events, state, and any legacy/vendor topics.
+        whole_device = f"device/{self.did}/#"
+        whole_results = self._subscribe_round(
+            [(whole_device, 2)],
+            label="whole-device-qos2",
+        )
+        attempts.append(("whole-device-qos2", whole_results))
+        remember(whole_results, 2)
+
+        whole_result = whole_results.get(whole_device)
+        if whole_result and whole_result[0]:
+            self.authorized_topics = [whole_device]
+            self.authorized_subscriptions = [(whole_device, 2)]
+            print(f"authorized_whole_device_topic={whole_device}")
+            return
+
+        print(
+            "whole_device_subscription_rejected; "
+            "trying all known Xiaomi device channel families"
+        )
 
         wildcard_event = f"device/{self.did}/up/event_occured/#"
         wildcard_property = f"device/{self.did}/up/properties_changed/#"
-        wildcard_results = self._subscribe_round(
+        wildcard_state = f"device/{self.did}/state/#"
+        known_results = self._subscribe_round(
             [
                 (wildcard_event, 2),
                 (wildcard_property, 2),
+                (wildcard_state, 2),
             ],
-            label="wildcard-qos2",
+            label="known-families-qos2",
         )
-        attempts.append(("wildcard-qos2", wildcard_results))
+        attempts.append(("known-families-qos2", known_results))
+        remember(known_results, 2)
 
-        event_result = wildcard_results.get(wildcard_event)
+        event_result = known_results.get(wildcard_event)
         if event_result and event_result[0]:
-            self.authorized_topics = [
-                topic
-                for topic, (ok, _reason) in wildcard_results.items()
-                if ok
-            ]
-            self.authorized_subscriptions = [
-                (topic, 2) for topic in self.authorized_topics
-            ]
-            property_result = wildcard_results.get(wildcard_property)
+            self.authorized_subscriptions = authorized
+            self.authorized_topics = [topic for topic, _qos in authorized]
+            property_result = known_results.get(wildcard_property)
             if property_result and not property_result[0]:
                 print(
                     f"property_subscription_rejected={property_result[1]} "
                     "(event stream is still usable)"
+                )
+            state_result = known_results.get(wildcard_state)
+            if state_result and not state_result[0]:
+                print(
+                    f"state_subscription_rejected={state_result[1]} "
+                    "(MIoT event/property capture is still usable)"
                 )
             return
 
@@ -655,20 +693,19 @@ class CloudListener:
                 label=f"exact-events-qos{qos}",
             )
             attempts.append((f"exact-events-qos{qos}", results))
+            remember(results, qos)
 
-            accepted = [
+            accepted_events = [
                 topic
                 for topic, (ok, _reason) in results.items()
                 if ok
             ]
-            if accepted:
-                self.authorized_topics = accepted
-                self.authorized_subscriptions = [
-                    (topic, qos) for topic in accepted
-                ]
+            if accepted_events:
+                self.authorized_subscriptions = authorized
+                self.authorized_topics = [topic for topic, _qos in authorized]
                 print(
-                    "authorized_exact_topics="
-                    + ",".join(accepted)
+                    "authorized_topics="
+                    + ",".join(self.authorized_topics)
                 )
                 return
 
@@ -681,8 +718,8 @@ class CloudListener:
             detail_parts.append(f"{label}[{detail}]")
 
         raise RuntimeError(
-            "broker connected but all tested event subscriptions were rejected: "
-            + "; ".join(detail_parts)
+            "broker connected but all tested device/event subscriptions "
+            "were rejected: " + "; ".join(detail_parts)
         )
 
     def stop(self) -> None:
