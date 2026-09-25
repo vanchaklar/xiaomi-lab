@@ -386,9 +386,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--region",
-        default=os.environ.get("XIAOMI_CLOUD_REGION", "i2"),
+        default=os.environ.get("XIAOMI_CLOUD_REGION", "all"),
         choices=REGION_CHOICES,
-        help="MQTT broker region; default i2 based on current vacuum experiment",
+        help="MQTT broker region; default all probes every Xiaomi broker",
     )
     parser.add_argument(
         "--auth-region",
