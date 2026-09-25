@@ -63,6 +63,7 @@ small { color:#bbb; }
   <div>Cloud DID: <span id="did">...</span></div>
   <div>Broker regions: <span id="regions">...</span></div>
   <div>Cloud errors: <span id="clouderrors">none</span></div>
+  <div>Authorized topics: <span id="topics">none</span></div>
   <div>Vacuum state: <span id="vacstate">...</span></div>
   <div>Battery: <span id="battery">...</span></div>
   <div>Last action: <span id="action">none</span></div>
@@ -103,6 +104,8 @@ async function refreshState() {
     el("regions").textContent = s.regions.length ? s.regions.join(", ") : "none";
     el("clouderrors").textContent =
       Object.keys(s.cloud_errors).length ? JSON.stringify(s.cloud_errors) : "none";
+    el("topics").textContent =
+      s.authorized_topics.length ? s.authorized_topics.join(", ") : "none";
     el("vacstate").textContent = JSON.stringify(s.state);
     el("battery").textContent = JSON.stringify(s.battery);
     el("action").textContent = s.last_action || "none";
@@ -225,6 +228,11 @@ class ExperimentController:
             "did": self.did,
             "regions": self.regions,
             "cloud_errors": dict(self.cloud_errors),
+            "authorized_topics": [
+                topic
+                for listener in self.listeners
+                for topic in listener.authorized_topics
+            ],
             "state": self.read_property(2, 1),
             "battery": self.read_property(3, 1),
             "last_action": self.last_action,
