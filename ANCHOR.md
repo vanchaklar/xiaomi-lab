@@ -24,13 +24,11 @@ Understand and mitigate carpet-only navigation drift on a Xiaomi Mi Robot Vacuum
 
 Prefer observation and reversible experiments before firmware changes:
 
-1. Direct polling of `7/1`, `9/6`, and `16/2` returns MIoT `-4004`. The device's MDID probe advertises subscriptions (`MSUB/PUB`, type 1) but not wildcard support; forced `miIO.sub` with `sub_method='.'` returns `-10`. The LAN listener now tests explicit `event_occured` / `properties_changed` subscription methods before falling back to the older scene-based push path.
-2. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.
-3. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
-4. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
-5. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
-6. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
-7. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
+1. Direct polling of `7/1`, `9/6`, and `16/2` returns MIoT `-4004`. The device advertises `MSUB/PUB` subscription type 1 but not wildcard support. `miIO.sub` returns `-10` for wildcard `.`, `event_occured`, and `properties_changed`, so the modern LAN subscription path is ruled out on firmware 2.2.1; the remaining push candidate is the older `send_data_frame`/local-scene mechanism, which needs event-specific scene metadata rather than guessed values.\n2. A read-only MIoT property brute-force scanner now covers arbitrary SIID/PIID ranges (including full 1..255 exhaustive mode) to discover firmware-exposed properties that are absent from the published model.\n3. Treat generic walls/obstacles as diagnostic geometry only, not as trusted self-calibration anchors.\n4. Use the dock as the primary trusted external reference because its IR signal has a distinct identity and docking constrains the robot to a known physical pose.
+5. Use raw direct-controller pulses as controlled inputs to characterize hard-floor versus carpet motion/odometry behavior.
+6. A touch-drawn path controller can save normalized geometric patterns and replay them as repeated turn/forward commands; use separate timing calibration for floor surfaces.
+7. Find a navigation-estimator reset/reinitialization primitive that can be applied while docked; map-switch cycling is already ruled out.
+8. Investigate APP/MCU firmware only if the local protocol cannot expose a useful reset/correction mechanism.
 
 ## Constraints
 
