@@ -132,3 +132,10 @@ python experiments/cloud_event_control.py
 
 Then open `http://127.0.0.1:8768/`. Use `--auto-start` to begin cleaning
 immediately after the cloud subscription is confirmed.
+
+
+### Manual direction queue
+
+The cloud control UI also exposes the raw direction-key property
+(`SIID 8 / PIID 1`) with editable values and per-command intervals. Commands
+can be sent once, stepped through one at a time, or run as an explicit queue.
