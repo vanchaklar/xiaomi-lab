@@ -116,3 +116,30 @@ encoding until multiple samples establish the format.
 
 The OAuth access/refresh tokens are account credentials. Do not paste them into
 issues or commit them. The listener never prints either token.
+
+
+## Probe every Xiaomi MQTT region
+
+If the account's broker region is uncertain, authenticate against the account
+region once and probe all MQTT brokers:
+
+```bash
+python experiments/cloud_event_listener.py \
+  --region all \
+  --auth-region de \
+  --login \
+  --duration 120
+```
+
+Replace `de` with the region used for OAuth/account data. The same OAuth token
+is then tried against all six Xiaomi MQTT broker regions. Brokers that reject
+the token are reported and skipped; any broker that accepts it remains connected
+for the capture.
+
+After the OAuth token has been cached, `--auth-region` can be omitted:
+
+```bash
+python experiments/cloud_event_listener.py --region all --duration 120
+```
+
+Each connected region gets its own CSV file.
