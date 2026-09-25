@@ -302,8 +302,10 @@ class CloudListener:
         self.output = output
         self.started = time.monotonic()
         self.connected = threading.Event()
-        self.subscribed = threading.Event()
+        self.subscribe_complete = threading.Event()
         self.failed_reason: str | None = None
+        self.subscription_mids: dict[int, str] = {}
+        self.subscription_results: dict[str, tuple[bool, str]] = {}
         self.debug = debug
 
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -351,6 +353,7 @@ class CloudListener:
 
         for topic, qos in self.topics:
             result, mid = client.subscribe(topic, qos=qos)
+            self.subscription_mids[mid] = topic
             print(f"subscribe topic={topic} result={result} mid={mid}")
 
     def on_connect_fail(self, client, userdata):
@@ -377,8 +380,28 @@ class CloudListener:
         properties,
     ):
         printable = [str(code) for code in reason_code_list]
-        print(f"subscribed mid={mid} reason_codes={printable}")
-        self.subscribed.set()
+        topic = self.subscription_mids.get(mid, f"mid:{mid}")
+
+        success = True
+        for code in reason_code_list:
+            value = getattr(code, "value", None)
+            if isinstance(value, int):
+                success = success and value < 128
+            else:
+                text = str(code)
+                success = success and (
+                    text.startswith("Granted QoS")
+                    or text in {"Success", "No subscription existed"}
+                )
+
+        self.subscription_results[topic] = (success, ",".join(printable))
+        print(
+            f"subscribed topic={topic} mid={mid} "
+            f"accepted={str(success).lower()} reason_codes={printable}"
+        )
+
+        if len(self.subscription_results) >= len(self.topics):
+            self.subscribe_complete.set()
 
     def on_message(self, client, userdata, msg):
         try:
@@ -439,6 +462,29 @@ class CloudListener:
             raise TimeoutError("timed out waiting for MQTT connection")
         if self.failed_reason:
             raise RuntimeError(self.failed_reason)
+
+        if not self.subscribe_complete.wait(10):
+            raise TimeoutError("timed out waiting for MQTT SUBACKs")
+
+        event_topic = f"device/{self.did}/up/event_occured/#"
+        event_result = self.subscription_results.get(event_topic)
+        if not event_result or not event_result[0]:
+            detail = "; ".join(
+                f"{topic}={reason}"
+                for topic, (_ok, reason) in self.subscription_results.items()
+            )
+            raise RuntimeError(
+                "broker connected but event subscription was rejected"
+                + (f": {detail}" if detail else "")
+            )
+
+        property_topic = f"device/{self.did}/up/properties_changed/#"
+        property_result = self.subscription_results.get(property_topic)
+        if property_result and not property_result[0]:
+            print(
+                f"property_subscription_rejected={property_result[1]} "
+                "(event stream is still usable)"
+            )
 
     def stop(self) -> None:
         try:
