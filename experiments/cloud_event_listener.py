@@ -105,6 +105,63 @@ def auth_url(region: str, run_uuid: str) -> tuple[str, str, str]:
     return f"{OAUTH_AUTH_URL}?{urlencode(params)}", redirect, state
 
 
+def cloud_api_post(region: str, access_token: str, path: str, data: dict) -> dict:
+    url = f"https://{api_host(region)}{path}"
+    body = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Host": api_host(region),
+            "X-Client-BizId": "haapi",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer{access_token}",
+            "X-Client-AppId": OAUTH_CLIENT_ID,
+        },
+        method="POST",
+    )
+
+    with urlopen(req, timeout=30) as response:
+        raw = response.read().decode("utf-8")
+
+    obj = json.loads(raw)
+    if obj.get("code") != 0:
+        raise RuntimeError(f"Xiaomi cloud API failed: {obj!r}")
+    return obj
+
+
+def get_cloud_devices(region: str, access_token: str) -> list[dict]:
+    devices: list[dict] = []
+    start_did = None
+
+    while True:
+        data = {
+            "limit": 200,
+            "get_split_device": True,
+            "get_third_device": True,
+            "dids": [],
+        }
+        if start_did:
+            data["start_did"] = start_did
+
+        obj = cloud_api_post(
+            region,
+            access_token,
+            "/app/v2/home/device_list_page",
+            data,
+        )
+        result = obj.get("result") or {}
+        devices.extend(result.get("list") or [])
+
+        if not result.get("has_more"):
+            break
+        start_did = result.get("next_start_did")
+        if not start_did:
+            break
+
+    return devices
+
+
 def token_request(region: str, data: dict) -> dict:
     query = urlencode({"data": json.dumps(data, separators=(",", ":"))})
     url = f"https://{api_host(region)}/app/v2/ha/oauth/get_token?{query}"
@@ -569,7 +626,7 @@ def main() -> None:
             )
         mqtt_regions = list(REGIONS)
     else:
-        auth_region = args.region
+        auth_region = args.auth_region or args.region
         mqtt_regions = [args.region]
 
     auth = get_auth(auth_region, force_login=args.login)
@@ -583,7 +640,50 @@ def main() -> None:
 
     vac = connect()
     info = safe_info(vac)
-    did = args.did or str(vac.device_id)
+    local_did = str(vac.device_id)
+
+    if args.did:
+        did = args.did
+        print(f"did_source=override did={did}")
+    else:
+        did = local_did
+        try:
+            cloud_devices = get_cloud_devices(auth_region, auth["access_token"])
+            model_matches = [
+                device
+                for device in cloud_devices
+                if device.get("model") == info["model"]
+            ]
+            exact = [
+                device
+                for device in model_matches
+                if str(device.get("did")) == local_did
+            ]
+            if exact:
+                did = str(exact[0]["did"])
+                print(f"did_source=cloud_exact did={did}")
+            elif len(model_matches) == 1:
+                did = str(model_matches[0]["did"])
+                print(
+                    f"did_source=cloud_model_match did={did} "
+                    f"local_did={local_did}"
+                )
+            elif model_matches:
+                print(
+                    "cloud_did_ambiguous="
+                    + ",".join(str(device.get("did")) for device in model_matches)
+                    + f"; using local_did={local_did}"
+                )
+            else:
+                print(
+                    f"cloud_device_match=none model={info['model']}; "
+                    f"using local_did={local_did}"
+                )
+        except Exception as exc:
+            print(
+                f"cloud_device_lookup_failed={type(exc).__name__}: {exc}; "
+                f"using local_did={local_did}"
+            )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_output = args.output
