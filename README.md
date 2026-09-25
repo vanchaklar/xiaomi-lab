@@ -103,3 +103,19 @@ python experiments/miot_bruteforce.py
 
 Use `--exhaustive` for SIID/PIID 1..255. The scanner does not invoke actions.
 See `docs/experiments/miot-bruteforce.md`.
+
+
+## Xiaomi Cloud event capture
+
+Firmware 2.2.1 rejects the local `miIO.sub` forms tested so far. A cloud
+listener now connects to Xiaomi's MIPS/MQTT event channel and records
+`event_occured` / `properties_changed` payloads:
+
+```bash
+pip install -r requirements.txt
+python experiments/cloud_event_listener.py --region de --login --auth-only
+python experiments/cloud_event_listener.py --region de --duration 60
+```
+
+Use the Xiaomi Home account region instead of `de` where appropriate. See
+`docs/experiments/cloud-events.md`.
