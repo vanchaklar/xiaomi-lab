@@ -107,3 +107,25 @@ that has been observed as type 4 and draws it as a challenge overlay even if a
 later packet changes that coordinate to another type. Repeated type-4 hits are
 also counted, which gives us a useful measure of how persistently the firmware
 classified that location as challenging.
+
+
+## current-clean-record correlation
+
+The same capture provides a useful partial decode of
+`SIID 9 / EIID 1 current-clean-record`.
+
+Immediately before this event:
+
+```text
+9/1 clean_area = 254
+9/2 clean_time = 3
+```
+
+and the event payload was:
+
+```text
+1 254 4 3
+```
+
+This strongly indicates that field 2 mirrors current clean area and field 4
+mirrors current clean time. Fields 1 and 3 remain unresolved.
