@@ -122,3 +122,23 @@ python experiments/lan_event_listener.py --sub-method properties_changed --durat
 
 An explicit method does not require `--allow-no-wildcard`. The script also now
 prints the raw subscription capability byte from the MDID response.
+
+
+## Explicit method subscription result
+
+Firmware 2.2.1 also rejects both explicit method filters:
+
+```text
+sub_method="event_occured"      -> result.code -10
+sub_method="properties_changed" -> result.code -10
+```
+
+So the modern `miIO.sub` path is ruled out here for both wildcard and
+explicit-method subscriptions.
+
+The remaining local push path implemented by older Xiaomi tooling is the
+`send_data_frame` / local-scene mechanism. That mechanism requires
+event-specific scene metadata, especially its trigger `extra` value. The MIoT
+spec gives the event IDs and argument properties but not that legacy scene
+encoding, so it should be captured from Xiaomi Home traffic or another real scene
+definition rather than guessed.
