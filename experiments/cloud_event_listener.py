@@ -365,7 +365,10 @@ class CloudListener:
         self.subscription_mids: dict[int, str] = {}
         self.subscription_results: dict[str, tuple[bool, str]] = {}
         self.authorized_topics: list[str] = []
+        self.authorized_subscriptions: list[tuple[str, int]] = []
+        self.reconnect_mids: dict[int, str] = {}
         self._expected_subacks = 0
+        self.stopping = False
         self.debug = debug
         self.event_callback = event_callback
 
@@ -386,6 +389,7 @@ class CloudListener:
         )
         self.client.tls_set(tls_version=ssl.PROTOCOL_TLS_CLIENT)
         self.client.tls_insecure_set(False)
+        self.client.reconnect_delay_set(min_delay=1, max_delay=15)
 
         self.client.on_connect = self.on_connect
         self.client.on_connect_fail = self.on_connect_fail
@@ -409,8 +413,21 @@ class CloudListener:
             self.connected.set()
             return
 
-        print(f"mqtt_connected={mqtt_host(self.region)}:{MQTT_PORT}")
+        print(f"mqtt_connected region={self.region} host={mqtt_host(self.region)}:{MQTT_PORT}")
         self.connected.set()
+
+        if self.authorized_subscriptions:
+            print(
+                f"mqtt_reconnected region={self.region}; "
+                "restoring authorized subscriptions"
+            )
+            for topic, qos in self.authorized_subscriptions:
+                result, mid = client.subscribe(topic, qos=qos)
+                self.reconnect_mids[mid] = topic
+                print(
+                    f"resubscribe region={self.region} topic={topic} "
+                    f"qos={qos} result={result} mid={mid}"
+                )
 
     def on_connect_fail(self, client, userdata):
         self.failed_reason = "MQTT TCP/TLS connection failed"
@@ -424,8 +441,11 @@ class CloudListener:
         reason_code,
         properties,
     ):
-        if reason_code != 0:
-            print(f"mqtt_disconnected reason={reason_code}", file=sys.stderr)
+        if reason_code != 0 and not self.stopping:
+            print(
+                f"mqtt_disconnected region={self.region} reason={reason_code}",
+                file=sys.stderr,
+            )
 
     def on_subscribe(
         self,
@@ -436,6 +456,26 @@ class CloudListener:
         properties,
     ):
         printable = [str(code) for code in reason_code_list]
+
+        reconnect_topic = self.reconnect_mids.pop(mid, None)
+        if reconnect_topic is not None:
+            success = True
+            for code in reason_code_list:
+                value = getattr(code, "value", None)
+                if isinstance(value, int):
+                    success = success and value < 128
+                else:
+                    text = str(code)
+                    success = success and (
+                        text.startswith("Granted QoS")
+                        or text in {"Success", "No subscription existed"}
+                    )
+            print(
+                f"resubscribed region={self.region} topic={reconnect_topic} "
+                f"accepted={str(success).lower()} reason_codes={printable}"
+            )
+            return
+
         topic = self.subscription_mids.get(mid, f"mid:{mid}")
 
         success = True
@@ -589,6 +629,9 @@ class CloudListener:
                 for topic, (ok, _reason) in wildcard_results.items()
                 if ok
             ]
+            self.authorized_subscriptions = [
+                (topic, 2) for topic in self.authorized_topics
+            ]
             property_result = wildcard_results.get(wildcard_property)
             if property_result and not property_result[0]:
                 print(
@@ -620,6 +663,9 @@ class CloudListener:
             ]
             if accepted:
                 self.authorized_topics = accepted
+                self.authorized_subscriptions = [
+                    (topic, qos) for topic in accepted
+                ]
                 print(
                     "authorized_exact_topics="
                     + ",".join(accepted)
@@ -640,6 +686,7 @@ class CloudListener:
         )
 
     def stop(self) -> None:
+        self.stopping = True
         try:
             self.client.disconnect()
             self.client.loop_stop()
