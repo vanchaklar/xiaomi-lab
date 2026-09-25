@@ -364,6 +364,8 @@ class CloudListener:
         self.failed_reason: str | None = None
         self.subscription_mids: dict[int, str] = {}
         self.subscription_results: dict[str, tuple[bool, str]] = {}
+        self.authorized_topics: list[str] = []
+        self._expected_subacks = 0
         self.debug = debug
         self.event_callback = event_callback
 
@@ -410,11 +412,6 @@ class CloudListener:
         print(f"mqtt_connected={mqtt_host(self.region)}:{MQTT_PORT}")
         self.connected.set()
 
-        for topic, qos in self.topics:
-            result, mid = client.subscribe(topic, qos=qos)
-            self.subscription_mids[mid] = topic
-            print(f"subscribe topic={topic} result={result} mid={mid}")
-
     def on_connect_fail(self, client, userdata):
         self.failed_reason = "MQTT TCP/TLS connection failed"
         self.connected.set()
@@ -459,8 +456,39 @@ class CloudListener:
             f"accepted={str(success).lower()} reason_codes={printable}"
         )
 
-        if len(self.subscription_results) >= len(self.topics):
+        if (
+            self._expected_subacks
+            and len(self.subscription_results) >= self._expected_subacks
+        ):
             self.subscribe_complete.set()
+
+    def _subscribe_round(
+        self,
+        topics: list[tuple[str, int]],
+        *,
+        label: str,
+        timeout: float = 10.0,
+    ) -> dict[str, tuple[bool, str]]:
+        self.subscribe_complete.clear()
+        self.subscription_mids.clear()
+        self.subscription_results.clear()
+        self._expected_subacks = len(topics)
+
+        print(f"subscription_round={label}")
+        for topic, qos in topics:
+            result, mid = self.client.subscribe(topic, qos=qos)
+            self.subscription_mids[mid] = topic
+            print(
+                f"subscribe topic={topic} qos={qos} "
+                f"result={result} mid={mid}"
+            )
+
+        if not self.subscribe_complete.wait(timeout):
+            raise TimeoutError(
+                f"timed out waiting for MQTT SUBACKs during {label}"
+            )
+
+        return dict(self.subscription_results)
 
     def on_message(self, client, userdata, msg):
         try:
@@ -541,28 +569,75 @@ class CloudListener:
         if self.failed_reason:
             raise RuntimeError(self.failed_reason)
 
-        if not self.subscribe_complete.wait(10):
-            raise TimeoutError("timed out waiting for MQTT SUBACKs")
+        attempts: list[tuple[str, dict[str, tuple[bool, str]]]] = []
 
-        event_topic = f"device/{self.did}/up/event_occured/#"
-        event_result = self.subscription_results.get(event_topic)
-        if not event_result or not event_result[0]:
-            detail = "; ".join(
+        wildcard_event = f"device/{self.did}/up/event_occured/#"
+        wildcard_property = f"device/{self.did}/up/properties_changed/#"
+        wildcard_results = self._subscribe_round(
+            [
+                (wildcard_event, 2),
+                (wildcard_property, 2),
+            ],
+            label="wildcard-qos2",
+        )
+        attempts.append(("wildcard-qos2", wildcard_results))
+
+        event_result = wildcard_results.get(wildcard_event)
+        if event_result and event_result[0]:
+            self.authorized_topics = [
+                topic
+                for topic, (ok, _reason) in wildcard_results.items()
+                if ok
+            ]
+            property_result = wildcard_results.get(wildcard_property)
+            if property_result and not property_result[0]:
+                print(
+                    f"property_subscription_rejected={property_result[1]} "
+                    "(event stream is still usable)"
+                )
+            return
+
+        print(
+            "wildcard_event_subscription_rejected; "
+            "trying exact known event topics"
+        )
+
+        for qos in (2, 1, 0):
+            exact_topics = [
+                (f"device/{self.did}/up/event_occured/{siid}/{eiid}", qos)
+                for siid, eiid in EVENT_NAMES
+            ]
+            results = self._subscribe_round(
+                exact_topics,
+                label=f"exact-events-qos{qos}",
+            )
+            attempts.append((f"exact-events-qos{qos}", results))
+
+            accepted = [
+                topic
+                for topic, (ok, _reason) in results.items()
+                if ok
+            ]
+            if accepted:
+                self.authorized_topics = accepted
+                print(
+                    "authorized_exact_topics="
+                    + ",".join(accepted)
+                )
+                return
+
+        detail_parts = []
+        for label, results in attempts:
+            detail = ",".join(
                 f"{topic}={reason}"
-                for topic, (_ok, reason) in self.subscription_results.items()
+                for topic, (_ok, reason) in results.items()
             )
-            raise RuntimeError(
-                "broker connected but event subscription was rejected"
-                + (f": {detail}" if detail else "")
-            )
+            detail_parts.append(f"{label}[{detail}]")
 
-        property_topic = f"device/{self.did}/up/properties_changed/#"
-        property_result = self.subscription_results.get(property_topic)
-        if property_result and not property_result[0]:
-            print(
-                f"property_subscription_rejected={property_result[1]} "
-                "(event stream is still usable)"
-            )
+        raise RuntimeError(
+            "broker connected but all tested event subscriptions were rejected: "
+            + "; ".join(detail_parts)
+        )
 
     def stop(self) -> None:
         try:
